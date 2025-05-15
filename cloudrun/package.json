@@ -1,0 +1,23 @@
+{
+  "name": "dagitoru-cloud-run",
+  "version": "1.0.0",
+  "description": "動画処理と文字起こしを行うCloud Run Job",
+  "main": "src/process.js",
+  "scripts": {
+    "start": "node src/process.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@google-cloud/pubsub": "^3.7.1",
+    "@google-cloud/speech": "^6.0.1",
+    "@google-cloud/storage": "^7.1.0",
+    "axios": "^1.5.0",
+    "dotenv": "^16.3.1",
+    "fluent-ffmpeg": "^2.1.2",
+    "node-fetch": "^3.3.2",
+    "uuid": "^9.0.0"
+  }
+} 

@@ -1,0 +1,261 @@
+# 要件定義書（ドラフト v0.3）
+
+---
+
+## 1  プロジェクト概要
+
+| 項目          | 内容                                                                    |
+| ----------- | --------------------------------------------------------------------- |
+| **プロジェクト名** | 議事録作成ツール                                                              |
+| **目的・ゴール**  | Slack にアップロードされた会議動画を自動で文字起こし・要約し議事録を生成して Notion DB に格納し議事録作成工数をゼロにする |
+| **背景**      | 会議録作成は手作業で時間がかかり属人化しているため自動化で作業時間を削減し情報共有の速度と品質を向上させたい                |
+
+---
+
+## 2  用語定義
+
+| 用語             | 定義                                        |
+| -------------- | ----------------------------------------- |
+| Webhook Server | Slack からのイベントを受信する Next.js API（Vercel Fn） |
+| Cloud Run Job  | ffmpeg 変換と Speech-to-Text を実行するコンテナ       |
+| Gemini         | Google Gemini Pro LLM API                 |
+
+---
+
+## 3  スコープ
+
+### 3.1  対象範囲
+
+* Slack からの動画ファイル受付（最大 1 GB）
+* Webhook Server で以下フローを実行
+
+  1. 動画→音声変換（ffmpeg）
+  2. 文字起こし（Google Cloud Speech-to-Text）
+  3. Gemini で要約生成
+  4. 議事録作成
+  5. Notion DB へ保存
+* インフラ: Next.js（API 中心）+ Vercel デプロイ
+
+### 3.2  対象外
+
+* UI フロントエンド
+* 多言語対応
+* 会議以外のメディア種別
+
+---
+
+## 4  ステークホルダー
+
+| 役割        | 氏名/部署 | 責務      |
+| --------- | ----- | ------- |
+| プロダクトオーナー | －     | 要件承認    |
+| 開発リーダー    | －     | 設計・実装統括 |
+| QA        | －     | 受入試験    |
+
+---
+
+## 5  要件一覧
+
+### 5.1  機能要件（FR）
+
+| ID        | 要件                                                                                                                                            | 優先度    | 備考                |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ----------------- |
+| **FR-01** | Slack から動画ファイル (≤ 1 GB) を Webhook Server へ受信                                                                                                  | High   | file\_shared イベント |
+| **FR-02** | 動画が GCS へ正常アップロード完了した時点で Slack スレッドへ **Upload OK** を返信                                                                                        | High   | thread\_ts 使用     |
+| **FR-03** | 動画ファイルを音声ファイルへ自動変換                                                                                                                            | High   | ffmpeg            |
+| **FR-04** | 音声ファイルを Google Cloud Speech-to-Text で文字起こし                                                                                                    | High   |                   |
+| **FR-05** | 文字起こし結果を Gemini で要約し以下 7 セクションを生成<br>① 会議名<br>② 会議の基本情報<br>③ 会議の目的とアジェンダ<br>④ 会議の内容（議論と決定事項）<br>⑤ 今後のスケジュールとタスク管理<br>⑥ 共有情報・添付資料<br>⑦ その他特記事項 | High   |                   |
+| **FR-06** | 要約結果を Notion DB にページ作成<br>会議名→Title その他 6 項目→Rich text                                                                                        | High   |                   |
+| **FR-07** | 議事録ページ作成完了を Slack スレッドに URL 付きで通知                                                                                                             | Medium |                   |
+
+> **Slack への動画送信時**
+> 本文に `YYYY/MM/DD`（または `年/月/日`）形式の日付・コンサルタント名・クライアント名を含める
+
+### 5.2  非機能要件（NFR）
+
+| ID         | 要件                            | 優先度    | 備考             |
+| ---------- | ----------------------------- | ------ | -------------- |
+| **NFR-01** | アップロード受付から Notion 保存まで 30 分以内 | High   | End-to-End SLA |
+| **NFR-02** | 動画ファイルサイズ上限 1 GB              | High   |                |
+
+---
+
+## 6  システム構成（概要）
+
+```mermaid
+flowchart LR
+  Slack[Slack Workspace] -->|file_shared| VercelWebhook[Webhook Server<br>(Next.js / Vercel Fn)]
+  VercelWebhook -->|Upload| GCS[(Google Cloud Storage)]
+  VercelWebhook -->|Publish Job| PubSub((Cloud Pub/Sub))
+  PubSub --> CloudRun[Cloud Run Job<br>FFmpeg + STT]
+  CloudRun -->|Audio + Transcript| GCS
+  CloudRun -->|Callback| VercelAPI[Next.js API Route]
+  VercelAPI -->|Summarize| Gemini[Gemini API]
+  VercelAPI -->|Create Page| NotionDB[(Notion Database)]
+  NotionDB -->|ACK| Slack
+```
+
+**補足**
+
+1. Webhook Server が Slack イベント受信と GCS 転送を担当
+2. 重い処理は Cloud Run へオフロードしタイムアウトを回避
+3. Gemini で要約→Notion DB へ保存し Slack へ完了通知
+
+---
+
+## 7  業務フロー（時系列）
+
+```mermaid
+sequenceDiagram
+  participant S as Slack
+  participant V as Vercel Fn
+  participant G as GCS
+  participant P as Pub/Sub
+  participant C as Cloud Run
+  participant Ge as Gemini
+  participant N as Notion
+  S->>V: file_shared (動画 URL)
+  V->>G: 動画 COPY
+  V-->>S: thread reply "Upload OK"
+  V->>P: publish(jobId)
+  C-->>P: subscribe(jobId)
+  C->>G: GET 動画
+  C->>C: FFmpeg 変換
+  C->>GoogleSTT: Speech-to-Text
+  C-->>G: transcript.json
+  C->>V: callback(jobId, transcriptURL)
+  V->>Ge: 要約・議事録生成
+  Ge-->>V: 議事録
+  V->>N: createPage
+  N-->>S: 完了メッセージ
+```
+
+---
+
+## 8  データ要件
+
+### 8.1  GCS オブジェクト設計
+
+| パス例                                        | 説明      |
+| ------------------------------------------ | ------- |
+| `meetings/{yyyyMMdd_HHmm}/{original}.mp4`  | 元動画     |
+| `meetings/{yyyyMMdd_HHmm}/audio.flac`      | 抽出音声    |
+| `meetings/{yyyyMMdd_HHmm}/transcript.json` | 文字起こし結果 |
+
+### 8.2  Notion DB スキーマ
+
+| プロパティ名          | 型         | 必須 | 備考                     |
+| --------------- | --------- | -- | ---------------------- |
+| 会議名             | **Title** | ✓  |                        |
+| 会議の基本情報         | Rich text | ✓  | 日付・コンサルタント名・クライアント名を含む |
+| 会議の目的とアジェンダ     | Rich text |    |                        |
+| 会議の内容（議論と決定事項）  | Rich text |    |                        |
+| 今後のスケジュールとタスク管理 | Rich text |    |                        |
+| 共有情報・添付資料       | Rich text |    |                        |
+| その他特記事項         | Rich text |    |                        |
+| Transcript\_URL | URL       | ✓  |                        |
+| Video\_URL      | URL       |    |                        |
+
+---
+
+## 9  セキュリティ・認証
+
+### 9.1  アクセス制御
+
+* Google IAM は必要最小限のロールのみ付与
+* Slack/Notion インテグレーションも最小権限スコープで発行
+
+---
+
+## 10  運用・保守（案）
+
+* **ログ監視**: Cloud Logging と Vercel Logs で集中管理
+* **失敗アラート**: エラー出力時に Slack #alert へ通知
+* **バックアップ**: Notion DB はエクスポート自動化 GCS オブジェクトは Lifecycle で 30 日保持
+
+---
+
+## 11  リスク・前提条件
+
+| 区分  | 内容                               | 対応策                    |
+| --- | -------------------------------- | ---------------------- |
+| リスク | Cloud Run 処理が 30 分を超過            | ジョブ分割または FFmpeg 並列化で短縮 |
+| 前提  | Slack ワークスペースのファイルサイズ上限が 1 GB 以上 | 超過時は事前圧縮をユーザーに周知       |
+
+---
+
+## 12  受入基準（抜粋）
+
+* MAX1 GB 動画をアップロードし 30 分以内に Notion ページが生成されている
+* 議事録ページに 7 セクションが正しく格納されている
+* Slack スレッドにアップロード完了と議事録完了の 2 通知が出る
+
+---
+
+## 14  変更管理
+
+* 変更要望はプロダクトオーナーが JIRA チケットを起票しステークホルダー合意後に実施
+
+---
+
+## 15  参考資料
+
+* Google Cloud Speech-to-Text ドキュメント
+* Notion API Reference
+* Slack Events API Reference
+
+---
+
+## 16  デプロイ方法（現場運用手順まとめ）
+
+### 16.1 Webhook Server（Next.js / Vercel Fn）
+- **Vercelダッシュボードから「Import Project」→GitHub連携で自動デプロイ**
+- 環境変数はVercelの「Environment Variables」で管理
+- 手動デプロイ例：
+  ```sh
+  vercel --prod
+  ```
+
+### 16.2 Cloud Run Job（動画処理コンテナ）
+- **DockerイメージをArtifact Registryにpushし、Cloud Runでデプロイ**
+- デプロイ手順例：
+  ```sh
+  # Dockerビルド
+  docker build -t asia-northeast1-docker.pkg.dev/mettinglog/dagitoru-repository/video-processor:latest .
+  # Artifact Registryへpush
+  docker push asia-northeast1-docker.pkg.dev/mettinglog/dagitoru-repository/video-processor:latest
+  # Cloud Runデプロイ
+  gcloud run deploy video-processing-service \
+    --image asia-northeast1-docker.pkg.dev/mettinglog/dagitoru-repository/video-processor:latest \
+    --region asia-northeast1 \
+    --platform managed \
+    --allow-unauthenticated \
+    --concurrency=1
+  ```
+- 環境変数・SecretsはCloud Runの「環境変数」またはSecret Managerで管理
+
+### 16.3 Notion Retry Job（Cloud Run Job）
+- Cloud Run Jobとして同様にデプロイ
+- Dockerイメージ名・サービス名を適宜変更
+
+### 16.4 Artifact Registry
+- GCPコンソールまたはTerraformでリポジトリ作成
+- 例：
+  ```sh
+  gcloud artifacts repositories create dagitoru-repository \
+    --repository-format=docker \
+    --location=asia-northeast1 \
+    --description="動画処理用"
+  ```
+
+### 16.5 TerraformによるIaC運用
+- infraディレクトリで`terraform apply`を実行
+- 例：
+  ```sh
+  cd infra
+  terraform init
+  terraform apply
+  ```
+- サービスアカウント、IAM、Artifact Registry、Cloud Run、Pub/Sub等を一括管理
+
+---
