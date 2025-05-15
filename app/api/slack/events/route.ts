@@ -9,6 +9,18 @@ export async function POST(req: NextRequest) {
   try {
     // Slackからのリクエストを検証
     const body = await req.text();
+    
+    // リクエストボディをJSONとしてパース
+    const jsonBody = JSON.parse(body);
+    console.log('Received Slack event:', jsonBody);
+    
+    // URL検証チャレンジに応答（最優先）
+    if (jsonBody.type === 'url_verification') {
+      console.log('Responding to URL verification challenge');
+      return NextResponse.json({ challenge: jsonBody.challenge });
+    }
+    
+    // シグネチャ検証は検証後に行う
     const timestamp = req.headers.get('x-slack-request-timestamp');
     const signature = req.headers.get('x-slack-signature');
     
@@ -21,14 +33,6 @@ export async function POST(req: NextRequest) {
     // シグネチャ検証
     if (!signature || !verifySlackSignature(body, signature, timestamp)) {
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
-    }
-    
-    // リクエストボディをJSONとしてパース
-    const jsonBody = JSON.parse(body);
-    
-    // URL検証チャレンジに応答
-    if (jsonBody.type === 'url_verification') {
-      return NextResponse.json({ challenge: jsonBody.challenge });
     }
     
     // イベントコールバック処理
