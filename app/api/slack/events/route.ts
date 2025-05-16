@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { CONFIG } from '@app/lib/config';
 import { SlackEventPayload, ProcessingJob } from '@app/lib/types';
+import { uploadFileToGCS, sendSlackMessage, startCloudRunJob, getFileType } from '@/app/lib/utils';
 
 // 処理済みイベントIDを保持するキャッシュ（メモリ内、サーバーレス環境では制限あり）
 const processedEvents = new Map<string, number>();
@@ -80,27 +81,119 @@ export async function POST(req: NextRequest) {
       const payload = jsonBody as SlackEventPayload;
       const { event, event_id } = payload;
       
-      // 重複イベントのチェック
-      if (event_id && isDuplicateEvent(event_id)) {
-        console.log(`Skipping duplicate event: ${event_id}`);
-        return NextResponse.json({ ok: true, status: 'duplicate_event_skipped' });
-      }
-      
-      console.log('Processing event type:', event.type);
-      
-      // イベントタイプによって処理を分岐
-      if (event.type === 'file_shared') {
-        // ファイル共有イベント - file-handlerに転送
-        console.log('Handling file_shared event');
-        await handleFileShared(payload);
-      } else if (event.type === 'message' && event.files) {
-        // ファイル付きメッセージ - combined-handlerに転送
-        console.log('Handling message with files');
-        await handleCombinedContent(payload);
-      } else if (event.type === 'message' && event.text && !event.files) {
-        // テキストのみのメッセージ - text-handlerに転送
-        console.log('Handling text-only message');
-        await handleTextOnly(payload);
+      // メッセージかつファイルがある場合に処理する
+      if (event.type === 'message' && event.files && event.files.length > 0) {
+        console.log('直接処理: ファイル付きメッセージを受信しました');
+        
+        // 一意のジョブIDを生成
+        const jobId = uuidv4();
+        
+        // ファイルをGoogle Cloud Storageにアップロード
+        const uploadResults = await Promise.all(
+          event.files.map(async (file) => {
+            try {
+              const fileType = getFileType(file);
+              console.log(`ファイルタイプ: ${fileType}, ファイル名: ${file.name}`);
+              
+              const uploadResult = await uploadFileToGCS(
+                file.url_private,
+                jobId,
+                file.name
+              );
+              
+              if (uploadResult.success) {
+                console.log(`ファイルのアップロードに成功: ${file.name}`);
+                return {
+                  success: true,
+                  file: file,
+                  gcsPath: uploadResult.path
+                };
+              } else {
+                console.error(`ファイルのアップロードに失敗: ${file.name}`);
+                return {
+                  success: false,
+                  file: file,
+                  error: uploadResult.error
+                };
+              }
+            } catch (error) {
+              console.error(`ファイル処理エラー: ${file.name}`, error);
+              return {
+                success: false,
+                file: file,
+                error: error instanceof Error ? error.message : 'Unknown error'
+              };
+            }
+          })
+        );
+        
+        // 成功したアップロードの数を確認
+        const successfulUploads = uploadResults.filter(r => r.success);
+        
+        // ジョブ情報を作成
+        if (successfulUploads.length > 0) {
+          const job: ProcessingJob = {
+            id: jobId,
+            fileIds: successfulUploads.map(r => (r as any).file.id),
+            text: event.text || '',
+            channel: event.channel,
+            ts: event.ts,
+            thread_ts: event.thread_ts,
+            user: event.user,
+            status: 'pending',
+            createdAt: new Date(),
+            updatedAt: new Date()
+          };
+          
+          // 完了メッセージの生成
+          const successCount = successfulUploads.length;
+          const failCount = uploadResults.length - successCount;
+          
+          let statusMessage = `📋 処理ジョブを作成しました (ID: ${jobId})\n`;
+          
+          if (successCount > 0) {
+            statusMessage += `✅ 処理中のファイル: ${successCount}件\n`;
+          }
+          
+          if (failCount > 0) {
+            statusMessage += `❌ 処理できなかったファイル: ${failCount}件\n`;
+            statusMessage += uploadResults
+              .filter(r => !r.success)
+              .map(r => `• ${(r as any).file.name}: ${(r as any).error}`)
+              .join('\n');
+            statusMessage += '\n';
+          }
+          
+          // Slack通知を送信（1回のみ）
+          try {
+            await sendSlackMessage(
+              event.channel,
+              statusMessage,
+              event.thread_ts || event.ts
+            );
+          } catch (e) {
+            console.error('Slack通知の送信に失敗:', e);
+          }
+          
+          // Cloud Runジョブの開始
+          try {
+            await startCloudRunJob(job);
+            console.log(`Cloud Runジョブを開始: ${jobId}`);
+          } catch (e) {
+            console.error('Cloud Runジョブの開始に失敗:', e);
+          }
+        } else {
+          // すべてのファイルのアップロードが失敗した場合
+          try {
+            await sendSlackMessage(
+              event.channel,
+              `❌ ファイルの処理に失敗しました。すべてのファイルをアップロードできませんでした。`,
+              event.thread_ts || event.ts
+            );
+          } catch (e) {
+            console.error('Slack通知の送信に失敗:', e);
+          }
+        }
       }
     }
     
@@ -135,80 +228,5 @@ function verifySlackSignature(body: string, signature: string, timestamp: string
   } catch (error) {
     console.error('Error verifying signature:', error);
     return false;
-  }
-}
-
-// ファイル共有イベントを処理する関数
-async function handleFileShared(payload: SlackEventPayload) {
-  try {
-    const endpointUrl = new URL('/api/slack/file-handler', process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000');
-    console.log('Forwarding to file-handler:', endpointUrl.toString());
-    
-    // file-handlerエンドポイントにリクエスト転送
-    const response = await fetch(endpointUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-    
-    if (!response.ok) {
-      console.error('Error forwarding to file-handler:', await response.text());
-    } else {
-      console.log('Successfully forwarded to file-handler');
-    }
-  } catch (error) {
-    console.error('Failed to forward to file-handler:', error);
-  }
-}
-
-// テキスト+ファイル処理関数
-async function handleCombinedContent(payload: SlackEventPayload) {
-  try {
-    // combined-handlerエンドポイントにリクエスト転送
-    const endpointUrl = new URL('/api/slack/combined-handler', process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000');
-    console.log('Forwarding to combined-handler:', endpointUrl.toString());
-    
-    const response = await fetch(endpointUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-    
-    if (!response.ok) {
-      console.error('Error forwarding to combined-handler:', await response.text());
-    } else {
-      console.log('Successfully forwarded to combined-handler');
-    }
-  } catch (error) {
-    console.error('Failed to forward to combined-handler:', error);
-  }
-}
-
-// テキストのみ処理関数
-async function handleTextOnly(payload: SlackEventPayload) {
-  try {
-    // text-handlerエンドポイントにリクエスト転送
-    const endpointUrl = new URL('/api/slack/text-handler', process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000');
-    console.log('Forwarding to text-handler:', endpointUrl.toString());
-    
-    const response = await fetch(endpointUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-    
-    if (!response.ok) {
-      console.error('Error forwarding to text-handler:', await response.text());
-    } else {
-      console.log('Successfully forwarded to text-handler');
-    }
-  } catch (error) {
-    console.error('Failed to forward to text-handler:', error);
   }
 } 
