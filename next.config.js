@@ -9,9 +9,6 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   distDir: '.next',
-  experimental: {
-    appDir: true
-  },
   swcMinify: true
 }
 
