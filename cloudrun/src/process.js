@@ -103,31 +103,18 @@ app.listen(port, () => {
     try {
       console.log(`Polling messages from subscription: ${SUBSCRIPTION_NAME}`);
       
-      // メッセージを最大10件取得
-      const [response] = await subscription.pull({
-        maxMessages: 10,
-      });
-      
-      console.log(`Received ${response.receivedMessages.length} messages`);
-      
-      if (response.receivedMessages.length === 0) {
-        // メッセージがなければ次のポーリングをスケジュール
-        setTimeout(pollMessages, 10000); // 10秒後に再試行
-        return;
-      }
-      
-      // 各メッセージを処理
-      for (const receivedMessage of response.receivedMessages) {
-        const message = receivedMessage.message;
-        console.log(`Processing message ${message.messageId}:`, Buffer.from(message.data, 'base64').toString());
+      // メッセージを最大10件取得（正しいAPIメソッドを使用）
+      subscription.on('message', async (message) => {
+        console.log(`Processing message ${message.id}:`, message.data.toString());
         
         try {
           // メッセージからジョブデータを抽出
-          const job = parseMessage({ data: message.data }); // インターフェース互換のためにオブジェクトを変換
+          const job = parseMessage({ data: message.data });
           
           if (!job) {
             console.error('Invalid job data, acknowledging message');
-            continue;
+            message.ack();
+            return;
           }
           
           console.log(`Processing job: ${job.id}`);
@@ -155,27 +142,24 @@ app.listen(port, () => {
           // コールバックを送信
           await sendCallback(callbackData);
           
+          // メッセージを確認応答
+          message.ack();
+          
         } catch (error) {
           console.error('Error processing PubSub message:', error);
+          message.ack(); // エラーが発生しても確認応答する
         }
-      }
+      });
       
-      // 全てのメッセージを確認応答
-      const ackIds = response.receivedMessages.map(msg => msg.ackId);
-      if (ackIds.length > 0) {
-        await subscription.acknowledge({
-          ackIds: ackIds,
-        });
-        console.log(`Acknowledged ${ackIds.length} messages`);
-      }
+      // エラーハンドリング
+      subscription.on('error', (error) => {
+        console.error('Subscription error:', error);
+      });
       
-      // 次のポーリングをスケジュール
-      setTimeout(pollMessages, 5000); // 5秒後に再試行
+      console.log('Message listener attached. Waiting for messages...');
       
     } catch (error) {
-      console.error('Error polling messages:', error);
-      // エラーが発生しても続けるために次のポーリングをスケジュール
-      setTimeout(pollMessages, 30000); // エラー時は30秒後に再試行
+      console.error('Error setting up message listener:', error);
     }
   }
   
