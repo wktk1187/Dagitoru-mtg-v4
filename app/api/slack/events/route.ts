@@ -81,119 +81,148 @@ export async function POST(req: NextRequest) {
       const payload = jsonBody as SlackEventPayload;
       const { event, event_id } = payload;
       
-      // メッセージかつファイルがある場合に処理する
-      if (event.type === 'message' && event.files && event.files.length > 0) {
-        console.log('直接処理: ファイル付きメッセージを受信しました');
+      // 重複イベント処理の防止 - event_idとtsで判断
+      if (event_id && event.ts) {
+        const eventKey = `${event_id}_${event.ts}`;
+        const hashKey = crypto.createHash('sha256').update(eventKey).digest('hex');
         
-        // 一意のジョブIDを生成
-        const jobId = uuidv4();
+        // レスポンスヘッダーにIDv4としてイベントハッシュを含める
+        // これによってCloudflare/Vercelのエッジキャッシュが同一リクエストを識別できる
+        const headerValue = {
+          'X-Processed-Event-Id': hashKey,
+          'Cache-Control': 'private, max-age=300'
+        };
         
-        // ファイルをGoogle Cloud Storageにアップロード
-        const uploadResults = await Promise.all(
-          event.files.map(async (file) => {
-            try {
-              const fileType = getFileType(file);
-              console.log(`ファイルタイプ: ${fileType}, ファイル名: ${file.name}`);
-              
-              const uploadResult = await uploadFileToGCS(
-                file.url_private,
-                jobId,
-                file.name
-              );
-              
-              if (uploadResult.success) {
-                console.log(`ファイルのアップロードに成功: ${file.name}`);
-                return {
-                  success: true,
-                  file: file,
-                  gcsPath: uploadResult.path
-                };
-              } else {
-                console.error(`ファイルのアップロードに失敗: ${file.name}`);
+        // 既に処理したevent_idを持つリクエストの場合は早期リターン
+        // ヘッダーをチェックすることでエッジキャッシュレベルで判断可能
+        const existingHeader = req.headers.get('X-Processed-Event-Id');
+        if (existingHeader === hashKey) {
+          console.log(`重複イベントを検出しました: ${event_id}`);
+          return NextResponse.json({ ok: true, status: 'duplicate_event_skipped' }, { 
+            headers: headerValue 
+          });
+        }
+        
+        // メッセージかつファイルがある場合のみ処理
+        if (event.type === 'message' && event.files && event.files.length > 0) {
+          console.log('直接処理: ファイル付きメッセージを受信しました');
+          
+          // 一意のジョブIDを生成
+          const jobId = uuidv4();
+          
+          // ファイルをGoogle Cloud Storageにアップロード
+          const uploadResults = await Promise.all(
+            event.files.map(async (file) => {
+              try {
+                const fileType = getFileType(file);
+                console.log(`ファイルタイプ: ${fileType}, ファイル名: ${file.name}`);
+                
+                const uploadResult = await uploadFileToGCS(
+                  file.url_private,
+                  jobId,
+                  file.name
+                );
+                
+                if (uploadResult.success) {
+                  console.log(`ファイルのアップロードに成功: ${file.name}`);
+                  return {
+                    success: true,
+                    file: file,
+                    gcsPath: uploadResult.path
+                  };
+                } else {
+                  console.error(`ファイルのアップロードに失敗: ${file.name}`);
+                  return {
+                    success: false,
+                    file: file,
+                    error: uploadResult.error
+                  };
+                }
+              } catch (error) {
+                console.error(`ファイル処理エラー: ${file.name}`, error);
                 return {
                   success: false,
                   file: file,
-                  error: uploadResult.error
+                  error: error instanceof Error ? error.message : 'Unknown error'
                 };
               }
-            } catch (error) {
-              console.error(`ファイル処理エラー: ${file.name}`, error);
-              return {
-                success: false,
-                file: file,
-                error: error instanceof Error ? error.message : 'Unknown error'
-              };
+            })
+          );
+          
+          // 成功したアップロードの数を確認
+          const successfulUploads = uploadResults.filter(r => r.success);
+          
+          // ジョブ情報を作成
+          if (successfulUploads.length > 0) {
+            const job: ProcessingJob = {
+              id: jobId,
+              fileIds: successfulUploads.map(r => (r as any).file.id),
+              text: event.text || '',
+              channel: event.channel,
+              ts: event.ts,
+              thread_ts: event.thread_ts,
+              user: event.user,
+              status: 'pending',
+              createdAt: new Date(),
+              updatedAt: new Date()
+            };
+            
+            // 完了メッセージの生成
+            const successCount = successfulUploads.length;
+            const failCount = uploadResults.length - successCount;
+            
+            let statusMessage = `📋 処理ジョブを作成しました (ID: ${jobId})\n`;
+            
+            if (successCount > 0) {
+              statusMessage += `✅ 処理中のファイル: ${successCount}件\n`;
             }
-          })
-        );
-        
-        // 成功したアップロードの数を確認
-        const successfulUploads = uploadResults.filter(r => r.success);
-        
-        // ジョブ情報を作成
-        if (successfulUploads.length > 0) {
-          const job: ProcessingJob = {
-            id: jobId,
-            fileIds: successfulUploads.map(r => (r as any).file.id),
-            text: event.text || '',
-            channel: event.channel,
-            ts: event.ts,
-            thread_ts: event.thread_ts,
-            user: event.user,
-            status: 'pending',
-            createdAt: new Date(),
-            updatedAt: new Date()
-          };
-          
-          // 完了メッセージの生成
-          const successCount = successfulUploads.length;
-          const failCount = uploadResults.length - successCount;
-          
-          let statusMessage = `📋 処理ジョブを作成しました (ID: ${jobId})\n`;
-          
-          if (successCount > 0) {
-            statusMessage += `✅ 処理中のファイル: ${successCount}件\n`;
-          }
-          
-          if (failCount > 0) {
-            statusMessage += `❌ 処理できなかったファイル: ${failCount}件\n`;
-            statusMessage += uploadResults
-              .filter(r => !r.success)
-              .map(r => `• ${(r as any).file.name}: ${(r as any).error}`)
-              .join('\n');
-            statusMessage += '\n';
-          }
-          
-          // Slack通知を送信（1回のみ）
-          try {
-            await sendSlackMessage(
-              event.channel,
-              statusMessage,
-              event.thread_ts || event.ts
-            );
-          } catch (e) {
-            console.error('Slack通知の送信に失敗:', e);
-          }
-          
-          // Cloud Runジョブの開始
-          try {
-            await startCloudRunJob(job);
-            console.log(`Cloud Runジョブを開始: ${jobId}`);
-          } catch (e) {
-            console.error('Cloud Runジョブの開始に失敗:', e);
-          }
-        } else {
-          // すべてのファイルのアップロードが失敗した場合
-          try {
-            await sendSlackMessage(
-              event.channel,
-              `❌ ファイルの処理に失敗しました。すべてのファイルをアップロードできませんでした。`,
-              event.thread_ts || event.ts
-            );
-          } catch (e) {
-            console.error('Slack通知の送信に失敗:', e);
+            
+            if (failCount > 0) {
+              statusMessage += `❌ 処理できなかったファイル: ${failCount}件\n`;
+              statusMessage += uploadResults
+                .filter(r => !r.success)
+                .map(r => `• ${(r as any).file.name}: ${(r as any).error}`)
+                .join('\n');
+              statusMessage += '\n';
+            }
+            
+            // Slack通知を送信（1回のみ）
+            try {
+              await sendSlackMessage(
+                event.channel,
+                statusMessage,
+                event.thread_ts || event.ts
+              );
+              console.log(`Slackメッセージを送信しました: channel=${event.channel}, ts=${event.ts || event.thread_ts}`);
+            } catch (e) {
+              console.error('Slack通知の送信に失敗:', e);
+            }
+            
+            // Cloud Runジョブの開始
+            try {
+              await startCloudRunJob(job);
+              console.log(`Cloud Runジョブを開始: ${jobId}`);
+            } catch (e) {
+              console.error('Cloud Runジョブの開始に失敗:', e);
+            }
+          } else {
+            // すべてのファイルのアップロードが失敗した場合
+            try {
+              await sendSlackMessage(
+                event.channel,
+                `❌ ファイルの処理に失敗しました。すべてのファイルをアップロードできませんでした。`,
+                event.thread_ts || event.ts
+              );
+            } catch (e) {
+              console.error('Slack通知の送信に失敗:', e);
+            }
           }
         }
+        
+        // 処理したイベントとしてマーク
+        return NextResponse.json({ ok: true }, { 
+          headers: headerValue 
+        });
       }
     }
     
