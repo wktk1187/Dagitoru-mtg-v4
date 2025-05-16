@@ -5,15 +5,41 @@ import axios from 'axios';
 import { CONFIG, getGCSPath } from './config';
 import { SlackFile, ProcessingJob } from './types';
 
+// Base64でエンコードされたサービスアカウントJSONをデコードする関数
+function getGoogleCredentials() {
+  try {
+    // 環境変数からBase64エンコードされたJSON文字列を取得
+    const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    if (!credentialsJson) {
+      console.error('Google credentials not found in environment variables');
+      return null;
+    }
+    
+    // Base64デコード
+    const decodedCredentials = Buffer.from(credentialsJson, 'base64').toString('utf-8');
+    return JSON.parse(decodedCredentials);
+  } catch (error) {
+    console.error('Failed to parse Google credentials:', error);
+    return null;
+  }
+}
+
+// 認証情報の取得
+const googleCredentials = getGoogleCredentials();
+
 // Slackクライアント初期化
 const slackClient = new WebClient(CONFIG.SLACK_TOKEN);
 
 // GCSクライアント初期化
-const storage = new Storage();
+const storage = new Storage({
+  credentials: googleCredentials
+});
 const bucket = storage.bucket(CONFIG.GCS_BUCKET_NAME);
 
 // PubSubクライアント初期化
-const pubsub = new PubSub();
+const pubsub = new PubSub({
+  credentials: googleCredentials
+});
 // デフォルトのトピック名を設定
 const topicName = CONFIG.PUBSUB_TOPIC || 'dagitoru-topic';
 const topic = pubsub.topic(topicName);
