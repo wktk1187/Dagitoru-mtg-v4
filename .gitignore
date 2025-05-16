@@ -46,4 +46,5 @@ yarn-error.log*
 *.tsbuildinfo
 # next-env.d.ts コメントアウト
 
+# temp directory
 temp_repo/
