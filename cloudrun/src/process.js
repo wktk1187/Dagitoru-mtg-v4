@@ -6,6 +6,7 @@
  */
 
 require('dotenv').config();
+const express = require('express');
 const { Storage } = require('@google-cloud/storage');
 const { PubSub } = require('@google-cloud/pubsub');
 const axios = require('axios');
@@ -15,6 +16,10 @@ const { execSync } = require('child_process');
 const ffmpeg = require('fluent-ffmpeg');
 const speech = require('@google-cloud/speech').v1p1beta1;
 const { v4: uuidv4 } = require('uuid');
+
+// HTTPサーバー設定
+const app = express();
+const port = process.env.PORT || 8080;
 
 // 定数設定
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
@@ -27,8 +32,64 @@ const TEMP_DIR = '/tmp';
 const storage = new Storage();
 const bucket = storage.bucket(BUCKET_NAME);
 const pubsub = new PubSub();
-const subscription = pubsub.subscription(SUBSCRIPTION_NAME);
 const speechClient = new speech.SpeechClient();
+
+// ミドルウェア設定
+app.use(express.json());
+
+// ルート設定 - ヘルスチェック用
+app.get('/', (req, res) => {
+  res.status(200).send('Dagitoru Processor is running');
+});
+
+// 処理開始エンドポイント
+app.post('/process', async (req, res) => {
+  console.log('Processing request received:', req.body);
+  
+  try {
+    // リクエストを検証
+    if (!req.body || !req.body.jobId || !req.body.fileIds) {
+      return res.status(400).send('Invalid request. Required: jobId, fileIds');
+    }
+    
+    // 非同期で処理を実行（レスポンスはすぐに返す）
+    const job = {
+      id: req.body.jobId,
+      fileIds: req.body.fileIds,
+      metadata: req.body.metadata || {},
+      channel: req.body.channel,
+      ts: req.body.ts,
+      thread_ts: req.body.thread_ts
+    };
+    
+    // 処理を非同期で開始
+    processJob(job)
+      .then(result => {
+        sendCallback({
+          jobId: job.id,
+          status: 'success',
+          transcriptUrl: result.transcriptUrl
+        }).catch(err => console.error('Callback error:', err));
+      })
+      .catch(error => {
+        console.error(`Error processing job ${job.id}:`, error);
+        sendCallback({
+          jobId: job.id,
+          status: 'failure',
+          error: error.message
+        }).catch(err => console.error('Callback error:', err));
+      });
+    
+    // 即時にレスポンスを返す
+    res.status(202).json({ 
+      message: 'Processing started',
+      jobId: job.id
+    });
+  } catch (error) {
+    console.error('Error handling request:', error);
+    res.status(500).send('Internal server error');
+  }
+});
 
 /**
  * メイン処理関数
@@ -360,8 +421,7 @@ function getFormattedDate() {
   return `${year}${month}${day}_${hours}${minutes}`;
 }
 
-// スクリプト実行
-main().catch(error => {
-  console.error('Fatal error in main function:', error);
-  process.exit(1);
+// サーバー起動
+app.listen(port, () => {
+  console.log(`Dagitoru Processor listening on port ${port}`);
 }); 
