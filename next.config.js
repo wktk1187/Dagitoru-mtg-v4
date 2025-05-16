@@ -9,7 +9,10 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   distDir: '.next',
-  output: 'standalone',
+  experimental: {
+    appDir: true
+  },
+  swcMinify: true
 }
 
 module.exports = nextConfig 
