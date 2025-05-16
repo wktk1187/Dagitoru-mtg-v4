@@ -36,6 +36,14 @@ const speechClient = new speech.SpeechClient();
 
 // PubSubサブスクリプションの初期化
 const subscription = pubsub.subscription(SUBSCRIPTION_NAME);
+console.log(`PubSub subscription initialized: ${SUBSCRIPTION_NAME}`);
+
+// サブスクリプションが正しく設定されているか確認
+console.log('Subscription details:', {
+  name: subscription.name,
+  metadata: subscription.metadata,
+  projectId: pubsub.projectId
+});
 
 // ミドルウェア設定
 app.use(express.json());
@@ -101,23 +109,40 @@ app.listen(port, () => {
   // PubSubメッセージをポーリングする関数
   async function pollMessages() {
     try {
-      console.log(`Polling messages from subscription: ${SUBSCRIPTION_NAME}`);
+      console.log(`[PUBSUB_SETUP] Starting message listener for subscription: ${SUBSCRIPTION_NAME}`);
       
-      // メッセージを最大10件取得（正しいAPIメソッドを使用）
+      // リスナー設定前のデバッグ情報
+      console.log('[PUBSUB_SETUP] Current subscription object:', {
+        exists: !!subscription,
+        name: subscription.name,
+        options: subscription.options
+      });
+      
+      // メッセージ受信リスナーの設定
       subscription.on('message', async (message) => {
-        console.log(`Processing message ${message.id}:`, message.data.toString());
+        console.log(`[PUBSUB_MESSAGE] Received message ${message.id}`, {
+          publishTime: message.publishTime,
+          received: new Date().toISOString()
+        });
         
         try {
           // メッセージからジョブデータを抽出
+          console.log('[PUBSUB_PROCESS] Extracting job data from message');
           const job = parseMessage({ data: message.data });
           
           if (!job) {
-            console.error('Invalid job data, acknowledging message');
+            console.error('[PUBSUB_ERROR] Invalid job data, acknowledging message');
             message.ack();
             return;
           }
           
-          console.log(`Processing job: ${job.id}`);
+          console.log(`[PUBSUB_PROCESS] Processing job: ${job.id}`, {
+            jobDetails: {
+              id: job.id,
+              fileCount: job.fileIds.length,
+              timestamp: new Date().toISOString()
+            }
+          });
           
           // コールバック用のデータ初期化
           let callbackData = {
@@ -153,13 +178,30 @@ app.listen(port, () => {
       
       // エラーハンドリング
       subscription.on('error', (error) => {
-        console.error('Subscription error:', error);
+        console.error('[PUBSUB_ERROR] Subscription error:', error);
+        console.error('[PUBSUB_ERROR] Error details:', {
+          name: error.name,
+          message: error.message,
+          stack: error.stack,
+          code: error.code,
+          time: new Date().toISOString()
+        });
       });
       
-      console.log('Message listener attached. Waiting for messages...');
+      console.log('[PUBSUB_SETUP] Message listener attached. Waiting for messages...');
       
     } catch (error) {
-      console.error('Error setting up message listener:', error);
+      console.error('[PUBSUB_FATAL] Error setting up message listener:', error);
+      console.error('[PUBSUB_FATAL] Fatal error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        time: new Date().toISOString()
+      });
+      
+      // 致命的なエラーの場合、一定時間後に再試行
+      console.log('[PUBSUB_RECOVERY] Will retry connection in 30 seconds');
+      setTimeout(pollMessages, 30000);
     }
   }
   
@@ -174,14 +216,20 @@ app.listen(port, () => {
  */
 function parseMessage(message) {
   try {
-    const data = JSON.parse(Buffer.from(message.data, 'base64').toString());
+    // 詳細なデバッグログを追加
+    console.log('Message data (base64):', message.data);
+    const decodedData = Buffer.from(message.data, 'base64').toString();
+    console.log('Message data (decoded):', decodedData);
+    
+    const data = JSON.parse(decodedData);
     
     // 必須フィールドの確認
     if (!data.id || !data.fileIds) {
-      console.error('Missing required job fields');
+      console.error('Missing required job fields', data);
       return null;
     }
     
+    console.log('Successfully parsed message data:', data);
     return data;
   } catch (error) {
     console.error('Error parsing message:', error);
