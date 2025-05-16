@@ -4,6 +4,36 @@ import { v4 as uuidv4 } from 'uuid';
 import { CONFIG } from '@app/lib/config';
 import { SlackEventPayload, ProcessingJob } from '@app/lib/types';
 
+// 処理済みイベントIDを保持するキャッシュ（メモリ内、サーバーレス環境では制限あり）
+const processedEvents = new Map<string, number>();
+
+// キャッシュのクリーンアップ（5分より古いエントリを削除）
+function cleanupEventCache() {
+  const now = Date.now();
+  for (const [eventId, timestamp] of processedEvents.entries()) {
+    if (now - timestamp > 5 * 60 * 1000) {
+      processedEvents.delete(eventId);
+    }
+  }
+}
+
+// 重複イベントかどうかチェックする関数
+function isDuplicateEvent(eventId: string): boolean {
+  // 5分に1回キャッシュをクリーンアップ
+  if (Math.random() < 0.1) {
+    cleanupEventCache();
+  }
+  
+  if (processedEvents.has(eventId)) {
+    console.log(`Duplicate event detected: ${eventId}`);
+    return true;
+  }
+  
+  // 新しいイベントを記録
+  processedEvents.set(eventId, Date.now());
+  return false;
+}
+
 // Slackのイベント受信エンドポイント
 export async function POST(req: NextRequest) {
   try {
@@ -48,7 +78,13 @@ export async function POST(req: NextRequest) {
     // イベントコールバック処理
     if (jsonBody.type === 'event_callback') {
       const payload = jsonBody as SlackEventPayload;
-      const { event } = payload;
+      const { event, event_id } = payload;
+      
+      // 重複イベントのチェック
+      if (event_id && isDuplicateEvent(event_id)) {
+        console.log(`Skipping duplicate event: ${event_id}`);
+        return NextResponse.json({ ok: true, status: 'duplicate_event_skipped' });
+      }
       
       console.log('Processing event type:', event.type);
       

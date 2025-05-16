@@ -43,13 +43,15 @@ const slackClient = new WebClient(CONFIG.SLACK_TOKEN);
 
 // GCSクライアント初期化
 const storage = new Storage({
-  credentials: googleCredentials
+  credentials: googleCredentials,
+  projectId: CONFIG.GCP_PROJECT_ID
 });
 const bucket = storage.bucket(CONFIG.GCS_BUCKET_NAME);
 
 // PubSubクライアント初期化
 const pubsub = new PubSub({
-  credentials: googleCredentials
+  credentials: googleCredentials,
+  projectId: CONFIG.GCP_PROJECT_ID
 });
 // デフォルトのトピック名を設定
 const topicName = CONFIG.PUBSUB_TOPIC || 'dagitoru-topic';

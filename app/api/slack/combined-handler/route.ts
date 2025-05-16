@@ -119,12 +119,21 @@ export async function POST(req: NextRequest) {
       consultant
     };
     
-    // Slackにアップロード完了通知
-    await sendSlackMessage(
-      event.channel,
-      `📝 メッセージとファイルを受け取りました。処理を開始します。\n🎥 動画ファイル数: ${validFiles.length}`,
-      event.thread_ts || event.ts
-    );
+    // Slackにアップロード完了通知（1回のみ、処理すべての状況をまとめて通知）
+    const messageContent = `📝 処理ジョブを開始しました（ID: ${jobId}）
+🎥 ファイル: ${validFiles.map(f => f?.name).join(', ')}
+📂 処理が完了するとお知らせします。`;
+
+    try {
+      await sendSlackMessage(
+        event.channel,
+        messageContent,
+        event.thread_ts || event.ts
+      );
+    } catch (error) {
+      console.error('combined-handler: Failed to send Slack notification:', error);
+      // 通知の失敗は処理を中断しない
+    }
     
     // Cloud Run Jobを開始
     console.log('combined-handler: Starting Cloud Run job');
