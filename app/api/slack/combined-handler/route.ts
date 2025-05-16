@@ -40,16 +40,21 @@ export async function POST(req: NextRequest) {
     const jobId = uuidv4();
     console.log('combined-handler: Generated job ID:', jobId);
     
+    // 処理結果を保存する配列
+    const results: {
+      success: string[];
+      error: string[];
+    } = {
+      success: [],
+      error: []
+    };
+    
     // 各ファイルをGCSにアップロード
     const filePromises = files.map(async (file) => {
       // ファイルサイズチェック
       if (file.size > CONFIG.MAX_FILE_SIZE) {
         console.log(`combined-handler: File size too large: ${file.name} (${file.size} bytes)`);
-        await sendSlackMessage(
-          event.channel,
-          `ファイルサイズが大きすぎます（最大1GB）: ${file.name}`,
-          event.thread_ts || event.ts
-        );
+        results.error.push(`${file.name} (サイズ超過: ${Math.round(file.size / 1024 / 1024)}MB)`);
         return null;
       }
       
@@ -67,15 +72,12 @@ export async function POST(req: NextRequest) {
       
       if (!uploadResult.success) {
         console.error(`combined-handler: Failed to upload file: ${file.name}`, uploadResult.error);
-        await sendSlackMessage(
-          event.channel,
-          `ファイルのアップロードに失敗しました: ${file.name}`,
-          event.thread_ts || event.ts
-        );
+        results.error.push(`${file.name} (アップロード失敗: ${uploadResult.error})`);
         return null;
       }
       
       console.log(`combined-handler: File uploaded successfully: ${file.name} -> ${uploadResult.path}`);
+      results.success.push(file.name);
       return {
         id: file.id,
         name: file.name,
@@ -91,6 +93,18 @@ export async function POST(req: NextRequest) {
     
     if (validFiles.length === 0) {
       console.error('combined-handler: No valid files were uploaded');
+      
+      // エラーメッセージ（1回だけ送信）
+      try {
+        await sendSlackMessage(
+          event.channel,
+          `❌ ファイル処理に失敗しました:\n${results.error.join('\n')}`,
+          event.thread_ts || event.ts
+        );
+      } catch (error) {
+        console.error('Slack message sending failed:', error);
+      }
+      
       return NextResponse.json({ error: 'No valid files uploaded' }, { status: 400 });
     }
     
@@ -100,7 +114,7 @@ export async function POST(req: NextRequest) {
     const job: ProcessingJob = {
       id: jobId,
       fileIds: validFiles.map(file => file?.id as string),
-      text: messageText, // テキストメッセージを追加
+      text: messageText,
       channel: event.channel,
       ts: event.ts,
       thread_ts: event.thread_ts,
@@ -119,20 +133,28 @@ export async function POST(req: NextRequest) {
       consultant
     };
     
-    // Slackにアップロード完了通知（1回のみ、処理すべての状況をまとめて通知）
-    const messageContent = `📝 処理ジョブを開始しました（ID: ${jobId}）
-🎥 ファイル: ${validFiles.map(f => f?.name).join(', ')}
-📂 処理が完了するとお知らせします。`;
-
+    // 処理結果のサマリーを作成（1回だけメッセージ送信）
+    let statusMessage = `📝 処理ジョブを作成しました (ID: ${jobId})`;
+    
+    if (results.success.length > 0) {
+      statusMessage += `\n✅ 処理対象ファイル(${results.success.length}件): ${results.success.join(', ')}`;
+    }
+    
+    if (results.error.length > 0) {
+      statusMessage += `\n❌ 処理できなかったファイル(${results.error.length}件): ${results.error.join(', ')}`;
+    }
+    
+    statusMessage += `\n📊 処理が完了するとお知らせします。`;
+    
+    // Slackに最終結果を1回だけ通知
     try {
       await sendSlackMessage(
         event.channel,
-        messageContent,
+        statusMessage,
         event.thread_ts || event.ts
       );
     } catch (error) {
       console.error('combined-handler: Failed to send Slack notification:', error);
-      // 通知の失敗は処理を中断しない
     }
     
     // Cloud Run Jobを開始
