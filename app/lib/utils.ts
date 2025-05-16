@@ -58,13 +58,41 @@ const topicName = CONFIG.PUBSUB_TOPIC || 'dagitoru-topic';
 const topic = pubsub.topic(topicName);
 
 // Slackにメッセージを送信する関数
+// メッセージのキャッシュを保持する変数
+const sentMessagesCache = new Map<string, number>();
+const MESSAGE_EXPIRY_MS = 60000; // 1分間キャッシュを保持
+
 export async function sendSlackMessage(channel: string, text: string, thread_ts?: string) {
   try {
+    // 重複防止のためのキーを生成
+    const messageKey = `${channel}_${thread_ts || 'main'}_${text.substring(0, 100)}`;
+    
+    // 現在のタイムスタンプ
+    const now = Date.now();
+    
+    // 古いキャッシュエントリを削除
+    for (const [key, timestamp] of sentMessagesCache.entries()) {
+      if (now - timestamp > MESSAGE_EXPIRY_MS) {
+        sentMessagesCache.delete(key);
+      }
+    }
+    
+    // キャッシュをチェックして重複を防止
+    if (sentMessagesCache.has(messageKey)) {
+      console.log(`重複メッセージを検出しました。送信をスキップします: ${messageKey}`);
+      return true; // 送信成功として扱う
+    }
+    
+    // メッセージを送信
     await slackClient.chat.postMessage({
       channel,
       text,
       thread_ts
     });
+    
+    // 成功したメッセージをキャッシュに追加
+    sentMessagesCache.set(messageKey, now);
+    
     return true;
   } catch (error) {
     console.error('Slack message sending failed:', error);
