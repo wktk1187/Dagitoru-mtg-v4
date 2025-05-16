@@ -34,6 +34,9 @@ const bucket = storage.bucket(BUCKET_NAME);
 const pubsub = new PubSub();
 const speechClient = new speech.SpeechClient();
 
+// PubSubサブスクリプションの初期化
+const subscription = pubsub.subscription(SUBSCRIPTION_NAME);
+
 // ミドルウェア設定
 app.use(express.json());
 
@@ -91,92 +94,96 @@ app.post('/process', async (req, res) => {
   }
 });
 
-/**
- * メイン処理関数
- */
-async function main() {
-  console.log('Cloud Run Job started');
+// サーバー起動
+app.listen(port, () => {
+  console.log(`Dagitoru Processor listening on port ${port}`);
   
-  try {
-    // 環境変数のチェック
-    if (!BUCKET_NAME || !PROJECT_ID || !CALLBACK_URL || !SUBSCRIPTION_NAME) {
-      throw new Error('必須環境変数が設定されていません');
-    }
-
-    // Pub/Subからメッセージを受信
-    const message = await receiveMessage();
-    
-    if (!message) {
-      console.log('No message received, exiting...');
-      return;
-    }
-    
-    // メッセージからジョブ情報を抽出
-    const job = parseMessage(message);
-    
-    if (!job) {
-      console.error('Invalid job data');
-      return;
-    }
-    
-    console.log(`Processing job: ${job.id}`);
-    
-    // コールバック用のデータ初期化
-    let callbackData = {
-      jobId: job.id,
-      status: 'failure',
-      error: null
-    };
-    
+  // PubSubメッセージをポーリングする関数
+  async function pollMessages() {
     try {
-      // ジョブ処理を実行
-      const result = await processJob(job);
-      callbackData = {
-        ...callbackData,
-        status: 'success',
-        transcriptUrl: result.transcriptUrl
-      };
+      console.log(`Polling messages from subscription: ${SUBSCRIPTION_NAME}`);
+      
+      // メッセージを最大10件取得
+      const [response] = await subscription.pull({
+        maxMessages: 10,
+      });
+      
+      console.log(`Received ${response.receivedMessages.length} messages`);
+      
+      if (response.receivedMessages.length === 0) {
+        // メッセージがなければ次のポーリングをスケジュール
+        setTimeout(pollMessages, 10000); // 10秒後に再試行
+        return;
+      }
+      
+      // 各メッセージを処理
+      for (const receivedMessage of response.receivedMessages) {
+        const message = receivedMessage.message;
+        console.log(`Processing message ${message.messageId}:`, Buffer.from(message.data, 'base64').toString());
+        
+        try {
+          // メッセージからジョブデータを抽出
+          const job = parseMessage({ data: message.data }); // インターフェース互換のためにオブジェクトを変換
+          
+          if (!job) {
+            console.error('Invalid job data, acknowledging message');
+            continue;
+          }
+          
+          console.log(`Processing job: ${job.id}`);
+          
+          // コールバック用のデータ初期化
+          let callbackData = {
+            jobId: job.id,
+            status: 'failure',
+            error: null
+          };
+          
+          try {
+            // ジョブ処理を実行
+            const result = await processJob(job);
+            callbackData = {
+              ...callbackData,
+              status: 'success',
+              transcriptUrl: result.transcriptUrl
+            };
+          } catch (error) {
+            console.error(`Error processing job ${job.id}:`, error);
+            callbackData.error = error.message;
+          }
+          
+          // コールバックを送信
+          await sendCallback(callbackData);
+          
+        } catch (error) {
+          console.error('Error processing PubSub message:', error);
+        }
+      }
+      
+      // 全てのメッセージを確認応答
+      const ackIds = response.receivedMessages.map(msg => msg.ackId);
+      if (ackIds.length > 0) {
+        await subscription.acknowledge({
+          ackIds: ackIds,
+        });
+        console.log(`Acknowledged ${ackIds.length} messages`);
+      }
+      
+      // 次のポーリングをスケジュール
+      setTimeout(pollMessages, 5000); // 5秒後に再試行
+      
     } catch (error) {
-      console.error(`Error processing job ${job.id}:`, error);
-      callbackData.error = error.message;
+      console.error('Error polling messages:', error);
+      // エラーが発生しても続けるために次のポーリングをスケジュール
+      setTimeout(pollMessages, 30000); // エラー時は30秒後に再試行
     }
-    
-    // コールバックを送信
-    await sendCallback(callbackData);
-    
-    // メッセージを確認応答
-    message.ack();
-    
-  } catch (error) {
-    console.error('Fatal error:', error);
-    process.exit(1);
   }
-}
+  
+  // ポーリングを開始
+  pollMessages();
+});
 
-/**
- * Pub/Subからメッセージを受信する関数
- */
-async function receiveMessage() {
-  return new Promise((resolve, reject) => {
-    // 1分間メッセージを待機
-    const timeout = setTimeout(() => {
-      subscription.removeAllListeners();
-      resolve(null);
-    }, 60000);
-    
-    subscription.on('message', (message) => {
-      clearTimeout(timeout);
-      subscription.removeAllListeners();
-      resolve(message);
-    });
-    
-    subscription.on('error', (error) => {
-      clearTimeout(timeout);
-      subscription.removeAllListeners();
-      reject(error);
-    });
-  });
-}
+/** * Pub/Subメッセージからジョブデータを抽出する関数 */
 
 /**
  * Pub/Subメッセージからジョブデータを抽出する関数
@@ -419,9 +426,4 @@ function getFormattedDate() {
   const minutes = String(date.getMinutes()).padStart(2, '0');
   
   return `${year}${month}${day}_${hours}${minutes}`;
-}
-
-// サーバー起動
-app.listen(port, () => {
-  console.log(`Dagitoru Processor listening on port ${port}`);
-}); 
+} 
