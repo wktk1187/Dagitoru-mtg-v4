@@ -8,6 +8,8 @@ const nextConfig = {
     // TypeScriptチェックを一時的に無効化
     ignoreBuildErrors: true,
   },
+  distDir: '.next',
+  output: 'standalone',
 }
 
 module.exports = nextConfig 
