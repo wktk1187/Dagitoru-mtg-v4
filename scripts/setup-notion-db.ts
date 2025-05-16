@@ -9,9 +9,10 @@
  *    npx ts-node scripts/setup-notion-db.ts create <親ページID> [データベース名]
  */
 
-import axios from 'axios';
-// dotenvをrequireで読み込む
+// CommonJSスタイルでモジュールをインポート
+const axios = require('axios');
 const dotenv = require('dotenv');
+// Nodeの型定義は@types/nodeパッケージから提供される
 
 // 環境変数の読み込み
 dotenv.config();
