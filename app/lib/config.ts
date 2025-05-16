@@ -1,8 +1,8 @@
 // アプリ設定
 export const CONFIG = {
-  // Slack設定
-  SLACK_TOKEN: process.env.SLACK_BOT_TOKEN || '',
-  SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET || '',
+    // Slack設定
+    SLACK_TOKEN: process.env.SLACK_TOKEN || '',
+    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET || '',
   
   // Google Cloud設定
   GCP_PROJECT_ID: process.env.GCP_PROJECT_ID || '',

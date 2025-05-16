@@ -17,7 +17,18 @@ function getGoogleCredentials() {
     
     // Base64デコード
     const decodedCredentials = Buffer.from(credentialsJson, 'base64').toString('utf-8');
-    return JSON.parse(decodedCredentials);
+    
+    // デコードされたJSONをパース
+    const credentials = JSON.parse(decodedCredentials);
+    
+    // プロジェクトIDの確認
+    if (!credentials.project_id) {
+      console.error('project_id not found in credentials');
+      // 環境変数から取得したプロジェクトIDを追加
+      credentials.project_id = process.env.GCP_PROJECT_ID || '';
+    }
+    
+    return credentials;
   } catch (error) {
     console.error('Failed to parse Google credentials:', error);
     return null;
