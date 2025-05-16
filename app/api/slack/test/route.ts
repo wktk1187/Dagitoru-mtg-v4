@@ -1,30 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// 簡易テスト用エンドポイント
-export async function POST(req: NextRequest) {
-  try {
-    // リクエストボディを取得
-    const body = await req.text();
-    console.log('Received test request body:', body);
-    
-    // JSONとしてパース
-    const jsonBody = JSON.parse(body);
-    
-    // URL検証に対応
-    if (jsonBody.type === 'url_verification') {
-      console.log('Challenge received:', jsonBody.challenge);
-      return NextResponse.json({ challenge: jsonBody.challenge });
-    }
-    
-    // その他のリクエストには単純に200を返す
-    return NextResponse.json({ status: 'ok' });
-  } catch (error) {
-    console.error('Error in test endpoint:', error);
-    return NextResponse.json({ error: String(error) }, { status: 500 });
-  }
+// シンプルなテストエンドポイント
+export async function GET(req: NextRequest) {
+  return NextResponse.json({ status: 'ok', message: 'Slack API test endpoint is working' });
 }
 
-// GETリクエストにも対応
-export async function GET() {
-  return NextResponse.json({ status: 'The test endpoint is working' });
+// Slackのチャレンジテスト用エンドポイント
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    console.log('Received test request:', body);
+    
+    // URL検証チャレンジに応答
+    if (body.type === 'url_verification') {
+      console.log('Responding to URL verification challenge');
+      return NextResponse.json({ challenge: body.challenge });
+    }
+    
+    // その他のリクエスト
+    return NextResponse.json({ status: 'received', body });
+  } catch (error) {
+    console.error('Error in test endpoint:', error);
+    return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
+  }
 } 
