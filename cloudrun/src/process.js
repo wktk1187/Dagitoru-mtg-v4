@@ -256,18 +256,18 @@ async function extractAudio(videoPath, audioPath) {
 }
 
 /**
- * 音声ファイルの文字起こしを行う関数
+ * 音声ファイルを文字起こしする関数
  */
 async function transcribeSpeech(audioPath) {
-  console.log(`Transcribing speech from ${audioPath}`);
+  console.log(`Starting speech recognition for ${audioPath}`);
   
-  // 音声ファイルのコンテンツを読み込み
+  // ファイルを読み込み
   const audioBytes = await fs.readFile(audioPath);
   const audio = {
-    content: audioBytes.toString('base64'),
+    content: audioBytes.toString('base64')
   };
   
-  // Speech-to-Text構成
+  // 音声認識リクエストの設定
   const config = {
     encoding: 'FLAC',
     sampleRateHertz: 16000,
@@ -276,58 +276,92 @@ async function transcribeSpeech(audioPath) {
     enableWordTimeOffsets: true,
     model: 'latest_long',
     useEnhanced: true,
+    metadata: {
+      interactionType: 'DISCUSSION',
+      industryNaicsCodeOfAudio: 541990, // Professional Services
+      microphoneDistance: 'NEARFIELD',
+      originalMediaType: 'AUDIO'
+    }
   };
   
   const request = {
     audio: audio,
-    config: config,
+    config: config
   };
   
-  // Speech-to-Textの実行
-  const [operation] = await speechClient.longRunningRecognize(request);
-  const [response] = await operation.promise();
-  
-  // 結果の整形
-  let transcript = '';
-  const results = response.results;
-  
-  if (results && results.length > 0) {
-    for (const result of results) {
-      transcript += result.alternatives[0].transcript + ' ';
+  try {
+    // 長時間音声の場合、非同期認識を使用
+    const [operation] = await speechClient.longRunningRecognize(request);
+    console.log('Waiting for speech recognition to complete...');
+    
+    // 非同期処理が完了するまで待機
+    const [response] = await operation.promise();
+    
+    // 結果を文字列に連結
+    let transcript = '';
+    const results = response.results;
+    
+    if (results && results.length > 0) {
+      for (const result of results) {
+        if (result.alternatives && result.alternatives.length > 0) {
+          transcript += result.alternatives[0].transcript + ' ';
+        }
+      }
     }
+    
+    console.log(`Transcription completed: ${transcript.length} characters`);
+    return transcript.trim();
+  } catch (error) {
+    console.error('Error in speech recognition:', error);
+    throw new Error(`Speech recognition failed: ${error.message}`);
   }
-  
-  console.log(`Transcription completed: ${transcript.substring(0, 100)}...`);
-  return transcript;
 }
 
 /**
  * コールバックを送信する関数
  */
 async function sendCallback(data) {
+  if (!CALLBACK_URL) {
+    throw new Error('CALLBACK_URL environment variable not set');
+  }
+  
+  console.log(`Sending callback to ${CALLBACK_URL} with data:`, JSON.stringify(data));
+  
   try {
-    console.log(`Sending callback for job ${data.jobId}, status: ${data.status}`);
     const response = await axios.post(CALLBACK_URL, data, {
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/json'
       },
+      // タイムアウトを増やす
+      timeout: 30000
     });
     
-    console.log(`Callback sent, response status: ${response.status}`);
-    return true;
+    console.log(`Callback sent successfully, status: ${response.status}`);
+    return response.data;
   } catch (error) {
-    console.error('Error sending callback:', error);
-    return false;
+    console.error('Error sending callback:', error.message);
+    // コールバック送信失敗はジョブ全体を失敗させない
+    // エラーログを残して処理を続行
+    console.error('Callback request failed, but job is marked as complete');
   }
 }
 
 /**
- * 現在の日付を YYYYMMDD_HHMM 形式で取得する関数
+ * 日付を整形して返す関数（yyyyMMdd_HHmm形式）
  */
 function getFormattedDate() {
-  const now = new Date();
-  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  
+  return `${year}${month}${day}_${hours}${minutes}`;
 }
 
 // スクリプト実行
-main().catch(console.error); 
+main().catch(error => {
+  console.error('Fatal error in main function:', error);
+  process.exit(1);
+}); 

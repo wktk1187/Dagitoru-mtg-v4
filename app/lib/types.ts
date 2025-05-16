@@ -54,6 +54,14 @@ export interface CloudRunCallback {
   status: 'success' | 'failure';
   transcriptUrl?: string;
   error?: string;
+  metadata?: {
+    channel?: string;
+    ts?: string;
+    thread_ts?: string;
+    videoUrl?: string;
+    audioUrl?: string;
+    [key: string]: any;
+  };
 }
 
 // Notion Types
