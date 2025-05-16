@@ -4,25 +4,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { CONFIG } from '@app/lib/config';
 import { SlackEventPayload, ProcessingJob } from '@app/lib/types';
 import { uploadFileToGCS, sendSlackMessage, startCloudRunJob, getFileType } from '@/app/lib/utils';
+import { EventProcessor } from '@/app/lib/kv-store';
 
-// 処理済みイベントのキャッシュ（サーバー再起動まで保持）
-const processedEvents = new Map<string, number>();
-const EVENT_CACHE_EXPIRY_MS = 3600000; // 1時間キャッシュを保持
+// イベント処理インスタンスの作成
+const eventProcessor = new EventProcessor();
 
 // 処理済みイベントの一意識別子を生成する関数
 function generateEventHash(event_id: string, channel: string, ts: string): string {
   const eventKey = `${event_id}_${channel}_${ts}`;
   return crypto.createHash('sha256').update(eventKey).digest('hex');
-}
-
-// キャッシュのクリーンアップ関数
-function cleanupEventCache() {
-  const now = Date.now();
-  for (const [key, timestamp] of processedEvents.entries()) {
-    if (now - timestamp > EVENT_CACHE_EXPIRY_MS) {
-      processedEvents.delete(key);
-    }
-  }
 }
 
 // Slackのイベント受信エンドポイント
@@ -76,12 +66,12 @@ export async function POST(req: NextRequest) {
         // イベントの一意性を確実に識別するハッシュを生成
         const eventHash = generateEventHash(event_id, event.channel, event.ts);
         
-        // 古いキャッシュを削除
-        cleanupEventCache();
+        // KVストアを使って重複チェック
+        const isProcessed = await eventProcessor.isProcessedOrMark(eventHash);
         
-        // メモリ内キャッシュで重複をチェック
-        if (processedEvents.has(eventHash)) {
-          console.log(`メモリキャッシュで重複リクエスト検出: ${event_id} (${event.channel}, ${event.ts})`);
+        // 既に処理済みのイベントなら早期リターン
+        if (isProcessed) {
+          console.log(`永続ストアで重複リクエスト検出: ${event_id} (${event.channel}, ${event.ts})`);
           return NextResponse.json(
             { ok: true, status: 'duplicate_event_skipped' },
             { 
@@ -93,26 +83,6 @@ export async function POST(req: NextRequest) {
             }
           );
         }
-        
-        // 既に処理したイベントかどうかをチェック
-        // 1. リクエストヘッダーにイベントハッシュがあるか確認
-        const processedEventHeader = req.headers.get('x-processed-event-hash');
-        if (processedEventHeader === eventHash) {
-          console.log(`ヘッダーで重複リクエスト検出: ${event_id} (${event.channel}, ${event.ts})`);
-          return NextResponse.json(
-            { ok: true, status: 'duplicate_event_skipped' },
-            { 
-              headers: {
-                'x-processed-event-hash': eventHash,
-                'x-duplicate-detected': 'true',
-                'cache-control': 'private, max-age=3600'
-              }
-            }
-          );
-        }
-        
-        // メモリキャッシュに記録
-        processedEvents.set(eventHash, Date.now());
         
         // 以下、実際の処理を行う部分
         // メッセージかつファイルがある場合のみ処理

@@ -1,0 +1,13 @@
+{
+  "crons": [],
+  "functions": {
+    "app/api/**/*": {
+      "memory": 1024
+    }
+  },
+  "kv": {
+    "dagitoru-cache": {
+      "ttl": 86400 
+    }
+  }
+} 

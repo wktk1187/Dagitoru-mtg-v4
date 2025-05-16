@@ -4,6 +4,10 @@ import { PubSub } from '@google-cloud/pubsub';
 import axios from 'axios';
 import { CONFIG, getGCSPath } from './config';
 import { SlackFile, ProcessingJob } from './types';
+import { EventProcessor } from './kv-store';
+
+// イベント処理インスタンスの作成
+const eventProcessor = new EventProcessor();
 
 // Base64でエンコードされたサービスアカウントJSONをデコードする関数
 function getGoogleCredentials() {
@@ -57,29 +61,21 @@ const pubsub = new PubSub({
 const topicName = CONFIG.PUBSUB_TOPIC || 'dagitoru-topic';
 const topic = pubsub.topic(topicName);
 
-// Slackにメッセージを送信する関数
-// メッセージのキャッシュを保持する変数
-const sentMessagesCache = new Map<string, number>();
-const MESSAGE_EXPIRY_MS = 60000; // 1分間キャッシュを保持
-
+/**
+ * Slackにメッセージを送信する関数
+ * Vercel KVを使用して重複送信を防止
+ */
 export async function sendSlackMessage(channel: string, text: string, thread_ts?: string) {
   try {
     // 重複防止のためのキーを生成
     const messageKey = `${channel}_${thread_ts || 'main'}_${text.substring(0, 100)}`;
     
-    // 現在のタイムスタンプ
-    const now = Date.now();
+    // KVを使用して送信済みかどうかを確認
+    const isSent = await eventProcessor.isMessageSentOrMark(messageKey);
     
-    // 古いキャッシュエントリを削除
-    for (const [key, timestamp] of sentMessagesCache.entries()) {
-      if (now - timestamp > MESSAGE_EXPIRY_MS) {
-        sentMessagesCache.delete(key);
-      }
-    }
-    
-    // キャッシュをチェックして重複を防止
-    if (sentMessagesCache.has(messageKey)) {
-      console.log(`重複メッセージを検出しました。送信をスキップします: ${messageKey}`);
+    // すでに送信済みの場合はスキップ
+    if (isSent) {
+      console.log(`重複メッセージをスキップしました: ${messageKey}`);
       return true; // 送信成功として扱う
     }
     
@@ -90,9 +86,7 @@ export async function sendSlackMessage(channel: string, text: string, thread_ts?
       thread_ts
     });
     
-    // 成功したメッセージをキャッシュに追加
-    sentMessagesCache.set(messageKey, now);
-    
+    console.log(`メッセージを送信しました: ${messageKey}`);
     return true;
   } catch (error) {
     console.error('Slack message sending failed:', error);
