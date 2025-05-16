@@ -1,8 +1,8 @@
 // アプリ設定
 export const CONFIG = {
-    // Slack設定
+  // Slack設定
     SLACK_TOKEN: process.env.SLACK_TOKEN || '',
-    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET || '',
+  SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET || '',
   
   // Google Cloud設定
   GCP_PROJECT_ID: process.env.GCP_PROJECT_ID || '',
@@ -17,7 +17,7 @@ export const CONFIG = {
   CLOUD_RUN_JOB_SERVICE: process.env.CLOUD_RUN_JOB_SERVICE || '',
   
   // 一般設定
-  MAX_FILE_SIZE: 1024 * 1024 * 1024, // 1GB
+  MAX_FILE_SIZE: 1.5 * 1024 * 1024 * 1024, // 1.5GB
   PROCESSING_TIMEOUT: 30 * 60 * 1000, // 30分
 };
 

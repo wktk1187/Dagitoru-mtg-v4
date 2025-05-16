@@ -31,11 +31,19 @@ const TEMP_DIR = '/tmp';
 // クライアント初期化
 const storage = new Storage();
 const bucket = storage.bucket(BUCKET_NAME);
-const pubsub = new PubSub();
+const pubsub = new PubSub({
+  projectId: PROJECT_ID
+});
 const speechClient = new speech.SpeechClient();
 
 // PubSubサブスクリプションの初期化
-const subscription = pubsub.subscription(SUBSCRIPTION_NAME);
+let subscriptionName = SUBSCRIPTION_NAME;
+if (!subscriptionName.startsWith('projects/')) {
+  subscriptionName = `projects/${PROJECT_ID}/subscriptions/${SUBSCRIPTION_NAME}`;
+}
+console.log(`PubSub subscription name: ${subscriptionName}`);
+
+const subscription = pubsub.subscription(subscriptionName);
 console.log(`PubSub subscription initialized: ${SUBSCRIPTION_NAME}`);
 
 // サブスクリプションが正しく設定されているか確認
@@ -119,7 +127,8 @@ app.listen(port, () => {
       });
       
       // メッセージ受信リスナーの設定
-      subscription.on('message', async (message) => {
+      // メッセージハンドラ関数の定義
+      const handlePubSubMessage = async (message) => {
         console.log(`[PUBSUB_MESSAGE] Received message ${message.id}`, {
           publishTime: message.publishTime,
           received: new Date().toISOString()
@@ -128,7 +137,7 @@ app.listen(port, () => {
         try {
           // メッセージからジョブデータを抽出
           console.log('[PUBSUB_PROCESS] Extracting job data from message');
-          const job = parseMessage({ data: message.data });
+          const job = parseMessage(message);
           
           if (!job) {
             console.error('[PUBSUB_ERROR] Invalid job data, acknowledging message');
@@ -174,10 +183,10 @@ app.listen(port, () => {
           console.error('Error processing PubSub message:', error);
           message.ack(); // エラーが発生しても確認応答する
         }
-      });
+      };
       
-      // エラーハンドリング
-      subscription.on('error', (error) => {
+      // エラーハンドラ関数の定義
+      const handlePubSubError = (error) => {
         console.error('[PUBSUB_ERROR] Subscription error:', error);
         console.error('[PUBSUB_ERROR] Error details:', {
           name: error.name,
@@ -186,66 +195,72 @@ app.listen(port, () => {
           code: error.code,
           time: new Date().toISOString()
         });
-      });
+      };
+      
+      // リスナーを設定
+      subscription.on('message', handlePubSubMessage);
+      subscription.on('error', handlePubSubError);
       
       console.log('[PUBSUB_SETUP] Message listener attached. Waiting for messages...');
       
       // バックアップとして明示的にメッセージをpullする処理も実行（1分ごと）
       setInterval(async () => {
         try {
-          console.log('[PUBSUB_PULL] Explicitly pulling messages...');
-          const [messages] = await subscription.pull({maxMessages: 10});
+          console.log('[PUBSUB_PULL] Explicitly checking for new messages...');
           
-          console.log(`[PUBSUB_PULL] Pulled ${messages.length} messages`);
+          // 明示的にサブスクリプションのステータスを確認するだけ
+          // （メッセージは既に設定済みのリスナーで処理されるため）
+          const [subscriptionExists] = await subscription.exists();
           
-          for (const message of messages) {
-            console.log(`[PUBSUB_PULL] Processing pulled message: ${message.id}`);
+          if (subscriptionExists) {
+            console.log('[PUBSUB_PULL] Subscription is active and listening for messages');
+          } else {
+            console.error('[PUBSUB_PULL_ERROR] Subscription does not exist!');
+            
+            // サブスクリプションが存在しない場合は作成を試みる
+            console.log('[PUBSUB_RECOVERY] Attempting to recreate subscription');
+            
+            // トピック名の取得（サブスクリプション名から推測）
+            const topicName = SUBSCRIPTION_NAME.replace('subscriptions/', '');
+            const fullTopicName = `projects/${PROJECT_ID}/topics/${topicName}`;
+            console.log(`[PUBSUB_RECOVERY] Using topic name: ${fullTopicName}`);
             
             try {
-              // メッセージからジョブデータを抽出
-              const job = parseMessage(message);
+              // トピックが存在するか確認
+              const topic = pubsub.topic(topicName);
+              const [topicExists] = await topic.exists();
               
-              if (!job) {
-                console.error('[PUBSUB_PULL_ERROR] Invalid job data, acknowledging message');
-                await subscription.acknowledge(message);
-                continue;
+              if (!topicExists) {
+                console.log(`[PUBSUB_RECOVERY] Topic does not exist, creating: ${topicName}`);
+                await pubsub.createTopic(topicName);
+                console.log(`[PUBSUB_RECOVERY] Topic created: ${topicName}`);
               }
               
-              console.log(`[PUBSUB_PULL_PROCESS] Processing job: ${job.id}`);
+              // サブスクリプションを作成
+              await pubsub.createSubscription(topicName, SUBSCRIPTION_NAME);
+              console.log(`[PUBSUB_RECOVERY] Subscription created: ${SUBSCRIPTION_NAME}`);
               
-              // コールバック用のデータ初期化
-              let callbackData = {
-                jobId: job.id,
-                status: 'failure',
-                error: null
-              };
+              // サブスクリプションの再初期化
+              subscription = pubsub.subscription(subscriptionName);
               
-              try {
-                // ジョブ処理を実行
-                const result = await processJob(job);
-                callbackData = {
-                  ...callbackData,
-                  status: 'success',
-                  transcriptUrl: result.transcriptUrl
-                };
-              } catch (error) {
-                console.error(`[PUBSUB_PULL_ERROR] Error processing job ${job.id}:`, error);
-                callbackData.error = error.message;
-              }
+              // リスナーの再設定
+              subscription.on('message', handlePubSubMessage);
+              subscription.on('error', handlePubSubError);
               
-              // コールバックを送信
-              await sendCallback(callbackData);
-              
-              // メッセージを確認応答
-              await subscription.acknowledge(message);
-              
-            } catch (error) {
-              console.error('[PUBSUB_PULL_ERROR] Error processing message:', error);
-              await subscription.acknowledge(message); // エラーが発生しても確認応答する
+              console.log('[PUBSUB_RECOVERY] Recovery complete, subscription is now active');
+            } catch (recoveryError) {
+              console.error('[PUBSUB_RECOVERY_ERROR] Failed to recover subscription:', recoveryError);
             }
           }
         } catch (error) {
-          console.error('[PUBSUB_PULL_ERROR] Error pulling messages:', error);
+          console.error('[PUBSUB_PULL_ERROR] Error checking subscription:', error);
+          console.error('[PUBSUB_PULL_ERROR] Error details:', {
+            name: error.name,
+            message: error.message,
+            stack: error.stack,
+            code: error.code,
+            time: new Date().toISOString()
+          });
         }
       }, 60000); // 1分ごとに実行
       
@@ -276,11 +291,37 @@ app.listen(port, () => {
 function parseMessage(message) {
   try {
     // 詳細なデバッグログを追加
-    console.log('Message data (base64):', message.data);
-    const decodedData = Buffer.from(message.data, 'base64').toString();
-    console.log('Message data (decoded):', decodedData);
+    console.log('Parsing message:', message.id);
+    console.log('Message attributes:', message.attributes);
     
-    const data = JSON.parse(decodedData);
+    let data;
+    if (message.data) {
+      // dataがBinaryのケース（Buffer）
+      if (Buffer.isBuffer(message.data)) {
+        console.log('Message data is Buffer, converting from base64');
+        const decodedData = message.data.toString('utf8');
+        console.log('Message data (decoded):', decodedData);
+        data = JSON.parse(decodedData);
+      }
+      // dataが既にBase64文字列の場合
+      else if (typeof message.data === 'string') {
+        console.log('Message data is string, parsing from base64');
+        const decodedData = Buffer.from(message.data, 'base64').toString('utf8');
+        console.log('Message data (decoded):', decodedData);
+        data = JSON.parse(decodedData);
+      }
+      // dataが既にJSONオブジェクトの場合
+      else if (typeof message.data === 'object') {
+        console.log('Message data is already an object');
+        data = message.data;
+      }
+    } else if (message.json) {
+      // v4.7.0以降のPubSubライブラリではmessage.jsonでJSONデータを直接取得可能
+      console.log('Using message.json to parse data');
+      data = message.json;
+    } else {
+      throw new Error('No data or json property found in message');
+    }
     
     // 必須フィールドの確認
     if (!data.id || !data.fileIds) {
@@ -380,9 +421,13 @@ async function processJob(job) {
     await fs.unlink(localAudioPath).catch(() => {});
     await fs.unlink(transcriptLocalPath).catch(() => {});
     
-    // 結果を返す
+    console.log(`[PROCESS_JOB] Job ${job.id} completed successfully`);
+    
+    // 処理結果を返す
     return {
-      transcriptUrl: `https://storage.googleapis.com/${BUCKET_NAME}/${transcriptGcsPath}`
+      jobId: job.id,
+      transcriptUrl: `https://storage.googleapis.com/${BUCKET_NAME}/${transcriptGcsPath}`,
+      metadata: transcriptData.metadata
     };
   } catch (error) {
     console.error('Error in job processing:', error);

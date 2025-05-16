@@ -97,18 +97,56 @@ export async function sendSlackMessage(channel: string, text: string, thread_ts?
 // ファイルをGCSにアップロードする関数
 export async function uploadFileToGCS(fileUrl: string, jobId: string, filename: string) {
   try {
+    console.log(`[GCS_UPLOAD] ファイルをSlackからダウンロード開始: ${filename}, URL: ${fileUrl.substring(0, 50)}...`);
+    
     // Slackからファイルをダウンロード
     const response = await axios.get(fileUrl, {
       headers: {
         Authorization: `Bearer ${CONFIG.SLACK_TOKEN}`,
       },
-      responseType: 'arraybuffer'
+      responseType: 'arraybuffer',
+      // タイムアウト設定を追加（60秒）
+      timeout: 60000
     });
     
-    // GCSにアップロード
+    console.log(`[GCS_UPLOAD] ファイルをSlackからダウンロード完了: ${filename}, サイズ: ${response.data.length} バイト`);
+    
+    if (!response.data || response.data.length === 0) {
+      throw new Error('ダウンロードしたファイルが空です');
+    }
+    
+    // GCS保存先パス
     const gcsPath = getGCSPath(jobId, filename);
+    console.log(`[GCS_UPLOAD] GCSへのアップロード開始: ${gcsPath}`);
+    
+    // バケット名のログ出力
+    console.log(`[GCS_UPLOAD] バケット名: ${CONFIG.GCS_BUCKET_NAME}`);
+    
+    // ファイルオブジェクトを作成
     const file = bucket.file(gcsPath);
-    await file.save(response.data);
+    
+    // メタデータを含めて保存
+    await file.save(response.data, {
+      metadata: {
+        contentType: response.headers['content-type'] || 'application/octet-stream',
+        metadata: {
+          sourceUrl: fileUrl,
+          jobId: jobId,
+          originalName: filename,
+          uploadTime: new Date().toISOString()
+        }
+      }
+    });
+    
+    console.log(`[GCS_UPLOAD] GCSへのアップロード完了: ${gcsPath}`);
+    
+    // アップロード検証（存在確認）
+    const [exists] = await file.exists();
+    if (!exists) {
+      throw new Error('ファイルはアップロードされましたが、GCSに存在しません');
+    }
+    
+    console.log(`[GCS_UPLOAD] ファイル存在確認成功: ${gcsPath}`);
     
     return {
       success: true,
@@ -116,10 +154,23 @@ export async function uploadFileToGCS(fileUrl: string, jobId: string, filename: 
       url: `gs://${CONFIG.GCS_BUCKET_NAME}/${gcsPath}`
     };
   } catch (error) {
-    console.error('File upload to GCS failed:', error);
+    console.error('[GCS_UPLOAD_ERROR] ファイルアップロード失敗:', error);
+    
+    // エラーの詳細情報を記録
+    const errorDetails = {
+      message: error instanceof Error ? error.message : '不明なエラー',
+      stack: error instanceof Error ? error.stack : null,
+      fileUrl: fileUrl ? fileUrl.substring(0, 30) + '...' : 'undefined',
+      jobId,
+      filename,
+      time: new Date().toISOString()
+    };
+    
+    console.error('[GCS_UPLOAD_ERROR] 詳細:', JSON.stringify(errorDetails));
+    
     return {
       success: false,
-      error: (error as Error).message
+      error: error instanceof Error ? error.message : '不明なエラー'
     };
   }
 }

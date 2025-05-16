@@ -90,16 +90,48 @@ export async function POST(req: NextRequest) {
           console.log(`処理開始: イベントID=${event_id}, チャンネル=${event.channel}, タイムスタンプ=${event.ts}`);
           
           try {
+            // ファイル情報の詳細ログ
+            console.log(`処理対象ファイル: ${event.files.length}件`, {
+              files: event.files.map(f => ({
+                id: f.id,
+                name: f.name,
+                size: f.size,
+                type: f.mimetype,
+                url_private: f.url_private ? f.url_private.substring(0, 30) + '...' : undefined
+              }))
+            });
+            
             // 一意のジョブIDを生成
             const jobId = uuidv4();
+            console.log(`ジョブID生成: ${jobId}`);
             
             // ファイルをGoogle Cloud Storageにアップロード
             const uploadResults = await Promise.all(
               event.files.map(async (file) => {
                 try {
-                  const fileType = getFileType(file);
-                  console.log(`ファイルタイプ: ${fileType}, ファイル名: ${file.name}`);
+                  if (!file.url_private) {
+                    console.error(`ファイルにURL_PRIVATEがありません: ${file.id}, ${file.name}`);
+                    return {
+                      success: false,
+                      file: file,
+                      error: 'ファイルのプライベートURLがありません'
+                    };
+                  }
                   
+                  const fileType = getFileType(file);
+                  console.log(`ファイルタイプ: ${fileType}, ファイル名: ${file.name}, サイズ: ${file.size}`);
+                  
+                  // ファイルサイズチェック
+                  if (file.size > CONFIG.MAX_FILE_SIZE) {
+                    console.error(`ファイルサイズが大きすぎます: ${file.name}, ${file.size} bytes`);
+                    return {
+                      success: false,
+                      file: file,
+                      error: 'ファイルサイズが大きすぎます（最大1GB）'
+                    };
+                  }
+                  
+                  console.log(`ファイルアップロード開始: ${file.name}`);
                   const uploadResult = await uploadFileToGCS(
                     file.url_private,
                     jobId,
@@ -107,14 +139,14 @@ export async function POST(req: NextRequest) {
                   );
                   
                   if (uploadResult.success) {
-                    console.log(`ファイルのアップロードに成功: ${file.name}`);
+                    console.log(`ファイルのアップロードに成功: ${file.name} -> ${uploadResult.path}`);
                     return {
                       success: true,
                       file: file,
                       gcsPath: uploadResult.path
                     };
                   } else {
-                    console.error(`ファイルのアップロードに失敗: ${file.name}`);
+                    console.error(`ファイルのアップロードに失敗: ${file.name}, エラー: ${uploadResult.error}`);
                     return {
                       success: false,
                       file: file,
@@ -134,6 +166,7 @@ export async function POST(req: NextRequest) {
             
             // 成功したアップロードの数を確認
             const successfulUploads = uploadResults.filter(r => r.success);
+            console.log(`アップロード結果: 成功=${successfulUploads.length}件, 失敗=${uploadResults.length - successfulUploads.length}件`);
             
             // ジョブ情報を作成
             if (successfulUploads.length > 0) {
@@ -149,6 +182,12 @@ export async function POST(req: NextRequest) {
                 createdAt: new Date(),
                 updatedAt: new Date()
               };
+              
+              console.log(`ジョブ作成完了: ${jobId}`, {
+                fileCount: job.fileIds?.length || 0,
+                channel: job.channel,
+                timestamp: job.ts
+              });
               
               // 完了メッセージの生成
               const successCount = successfulUploads.length;
