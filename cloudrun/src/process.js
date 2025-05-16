@@ -190,6 +190,65 @@ app.listen(port, () => {
       
       console.log('[PUBSUB_SETUP] Message listener attached. Waiting for messages...');
       
+      // バックアップとして明示的にメッセージをpullする処理も実行（1分ごと）
+      setInterval(async () => {
+        try {
+          console.log('[PUBSUB_PULL] Explicitly pulling messages...');
+          const [messages] = await subscription.pull({maxMessages: 10});
+          
+          console.log(`[PUBSUB_PULL] Pulled ${messages.length} messages`);
+          
+          for (const message of messages) {
+            console.log(`[PUBSUB_PULL] Processing pulled message: ${message.id}`);
+            
+            try {
+              // メッセージからジョブデータを抽出
+              const job = parseMessage(message);
+              
+              if (!job) {
+                console.error('[PUBSUB_PULL_ERROR] Invalid job data, acknowledging message');
+                await subscription.acknowledge(message);
+                continue;
+              }
+              
+              console.log(`[PUBSUB_PULL_PROCESS] Processing job: ${job.id}`);
+              
+              // コールバック用のデータ初期化
+              let callbackData = {
+                jobId: job.id,
+                status: 'failure',
+                error: null
+              };
+              
+              try {
+                // ジョブ処理を実行
+                const result = await processJob(job);
+                callbackData = {
+                  ...callbackData,
+                  status: 'success',
+                  transcriptUrl: result.transcriptUrl
+                };
+              } catch (error) {
+                console.error(`[PUBSUB_PULL_ERROR] Error processing job ${job.id}:`, error);
+                callbackData.error = error.message;
+              }
+              
+              // コールバックを送信
+              await sendCallback(callbackData);
+              
+              // メッセージを確認応答
+              await subscription.acknowledge(message);
+              
+            } catch (error) {
+              console.error('[PUBSUB_PULL_ERROR] Error processing message:', error);
+              await subscription.acknowledge(message); // エラーが発生しても確認応答する
+            }
+          }
+        } catch (error) {
+          console.error('[PUBSUB_PULL_ERROR] Error pulling messages:', error);
+        }
+      }, 60000); // 1分ごとに実行
+      
     } catch (error) {
       console.error('[PUBSUB_FATAL] Error setting up message listener:', error);
       console.error('[PUBSUB_FATAL] Fatal error details:', {
