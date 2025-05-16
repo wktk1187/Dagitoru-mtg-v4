@@ -1,40 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { WebClient } from '@slack/web-api';
 import { v4 as uuidv4 } from 'uuid';
 import { CONFIG } from '@/app/lib/config';
 import { SlackEventPayload, ProcessingJob, SlackFile } from '@/app/lib/types';
 import { uploadFileToGCS, sendSlackMessage, startCloudRunJob, getFileType, extractDateFromText, extractNamesFromText } from '@/app/lib/utils';
 
+// Slackクライアント初期化
+const slackClient = new WebClient(CONFIG.SLACK_TOKEN);
+
 // 複合コンテンツ（テキスト+ファイル）処理エンドポイント
 export async function POST(req: NextRequest) {
   try {
+    console.log('combined-handler: Received request');
     const payload = await req.json() as SlackEventPayload;
     const { event } = payload;
     
-    // ファイルとテキストの両方が必要
-    if (!event.files || event.files.length === 0) {
+    console.log('combined-handler: Processing message with files');
+    
+    // ファイル情報を取得
+    let files: SlackFile[] = [];
+    
+    if (event.files) {
+      files = event.files;
+      console.log(`combined-handler: Found ${files.length} files in the message`);
+    } else {
+      console.log('combined-handler: No files found in the message');
       return NextResponse.json({ error: 'No files found' }, { status: 400 });
     }
     
-    if (!event.text || event.text.trim() === '') {
-      return NextResponse.json({ error: 'No text content' }, { status: 400 });
-    }
-    
-    // ボットからのメッセージは処理しない（無限ループ防止）
-    if (event.bot_id) {
-      return NextResponse.json({ ignored: 'Bot message' });
-    }
+    // テキスト内容を取得
+    const messageText = event.text || '';
+    console.log('combined-handler: Message text:', messageText);
     
     // テキスト内容から日付やクライアント情報などを抽出
-    const dateStr = extractDateFromText(event.text);
-    const { client, consultant } = extractNamesFromText(event.text);
+    const dateStr = extractDateFromText(messageText);
+    const { client, consultant } = extractNamesFromText(messageText);
     
     // ジョブID生成
     const jobId = uuidv4();
+    console.log('combined-handler: Generated job ID:', jobId);
     
     // 各ファイルをGCSにアップロード
-    const filePromises = event.files.map(async (file: SlackFile) => {
+    const filePromises = files.map(async (file) => {
       // ファイルサイズチェック
       if (file.size > CONFIG.MAX_FILE_SIZE) {
+        console.log(`combined-handler: File size too large: ${file.name} (${file.size} bytes)`);
         await sendSlackMessage(
           event.channel,
           `ファイルサイズが大きすぎます（最大1GB）: ${file.name}`,
@@ -45,8 +55,10 @@ export async function POST(req: NextRequest) {
       
       // ファイルタイプの判別
       const fileType = getFileType(file);
+      console.log(`combined-handler: File type: ${fileType} for file ${file.name}`);
       
       // GCSにアップロード
+      console.log(`combined-handler: Uploading file to GCS: ${file.name}`);
       const uploadResult = await uploadFileToGCS(
         file.url_private,
         jobId,
@@ -54,6 +66,7 @@ export async function POST(req: NextRequest) {
       );
       
       if (!uploadResult.success) {
+        console.error(`combined-handler: Failed to upload file: ${file.name}`, uploadResult.error);
         await sendSlackMessage(
           event.channel,
           `ファイルのアップロードに失敗しました: ${file.name}`,
@@ -62,6 +75,7 @@ export async function POST(req: NextRequest) {
         return null;
       }
       
+      console.log(`combined-handler: File uploaded successfully: ${file.name} -> ${uploadResult.path}`);
       return {
         id: file.id,
         name: file.name,
@@ -76,14 +90,17 @@ export async function POST(req: NextRequest) {
     const validFiles = fileResults.filter(Boolean);
     
     if (validFiles.length === 0) {
+      console.error('combined-handler: No valid files were uploaded');
       return NextResponse.json({ error: 'No valid files uploaded' }, { status: 400 });
     }
     
-    // ジョブ作成 - テキストとファイル情報の両方を含む
+    console.log(`combined-handler: Successfully uploaded ${validFiles.length} files`);
+    
+    // ジョブ作成
     const job: ProcessingJob = {
       id: jobId,
       fileIds: validFiles.map(file => file?.id as string),
-      text: event.text, // テキスト内容も含める
+      text: messageText, // テキストメッセージを追加
       channel: event.channel,
       ts: event.ts,
       thread_ts: event.thread_ts,
@@ -93,38 +110,29 @@ export async function POST(req: NextRequest) {
       updatedAt: new Date()
     };
     
-    // メタデータ情報を追加（Cloud Runに渡すための追加情報）
+    console.log('combined-handler: Created processing job:', job);
+    
+    // メタデータ情報を追加
     const metadata = {
       date: dateStr,
       client,
-      consultant,
-      fileCount: validFiles.length,
-      fileTypes: validFiles.map(file => file?.type)
+      consultant
     };
     
     // Slackにアップロード完了通知
     await sendSlackMessage(
       event.channel,
-      `Upload OK: ${validFiles.length}個のファイルとテキスト情報を処理中です`,
+      `📝 メッセージとファイルを受け取りました。処理を開始します。\n🎥 動画ファイル数: ${validFiles.length}`,
       event.thread_ts || event.ts
     );
     
-    // Cloud Run Jobを開始 - メタデータを追加
-    const jobWithMetadata = {
-      ...job,
-      metadata
-    };
+    // Cloud Run Jobを開始
+    console.log('combined-handler: Starting Cloud Run job');
+    await startCloudRunJob(job);
     
-    await startCloudRunJob(jobWithMetadata);
-    
-    return NextResponse.json({ 
-      jobId, 
-      success: true,
-      fileCount: validFiles.length,
-      hasMetadata: Boolean(dateStr || client || consultant)
-    });
+    return NextResponse.json({ jobId, success: true });
   } catch (error) {
-    console.error('Error processing combined content:', error);
+    console.error('combined-handler: Error processing combined content:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 } 
