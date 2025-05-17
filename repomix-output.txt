@@ -1,0 +1,4374 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+================================================================
+File Summary
+================================================================
+
+Purpose:
+--------
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+
+File Format:
+------------
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+4. Multiple file entries, each consisting of:
+  a. A separator line (================)
+  b. The file path (File: path/to/file)
+  c. Another separator line
+  d. The full contents of the file
+  e. A blank line
+
+Usage Guidelines:
+-----------------
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+
+Notes:
+------
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+
+Additional Info:
+----------------
+
+================================================================
+Directory Structure
+================================================================
+.eslintrc.json
+.gitignore
+.repomix/bundles.json
+# 要件定義書（ドラフト v0.3）.txt
+app/api/cloudrun/callback/route.ts
+app/api/gemini/analyze-text/route.ts
+app/api/gemini/summarize/route.ts
+app/api/jobs/retry/[jobId]/route.ts
+app/api/notion/create-db/route.ts
+app/api/notion/setup-db/route.ts
+app/api/slack/combined-handler/route.ts
+app/api/slack/events/route.ts
+app/api/slack/file-handler/route.ts
+app/api/slack/test/route.ts
+app/api/slack/text-handler/route.ts
+app/globals.css
+app/layout.tsx
+app/lib/config.ts
+app/lib/kv-store.ts
+app/lib/notion/client.ts
+app/lib/notion/meetings.ts
+app/lib/notion/setup-db.ts
+app/lib/notion/types.ts
+app/lib/types.ts
+app/lib/utils.ts
+app/lib/utils/fetch-utils.ts
+app/lib/utils/logger.ts
+app/page.module.css
+app/page.tsx
+cloudrun/Dockerfile
+cloudrun/package.json
+cloudrun/src/process.js
+next-env.d.ts
+next.config.js
+package.json
+policy.yaml
+public/file.svg
+public/globe.svg
+public/next.svg
+public/vercel.svg
+public/window.svg
+scripts/setup-notion-db.ts
+scripts/tsconfig/tsconfig.json
+tsconfig.json
+vercel.json
+
+================================================================
+Files
+================================================================
+
+================
+File: .repomix/bundles.json
+================
+{
+  "bundles": {}
+}
+
+================
+File: # 要件定義書（ドラフト v0.3）.txt
+================
+# 要件定義書（ドラフト v0.3）
+
+---
+
+## 1  プロジェクト概要
+
+| 項目          | 内容                                                                    |
+| ----------- | --------------------------------------------------------------------- |
+| **プロジェクト名** | 議事録作成ツール                                                              |
+| **目的・ゴール**  | Slack にアップロードされた会議動画を自動で文字起こし・要約し議事録を生成して Notion DB に格納し議事録作成工数をゼロにする |
+| **背景**      | 会議録作成は手作業で時間がかかり属人化しているため自動化で作業時間を削減し情報共有の速度と品質を向上させたい                |
+
+---
+
+## 2  用語定義
+
+| 用語             | 定義                                        |
+| -------------- | ----------------------------------------- |
+| Webhook Server | Slack からのイベントを受信する Next.js API（Vercel Fn） |
+| Cloud Run Job  | ffmpeg 変換と Speech-to-Text を実行するコンテナ       |
+| Gemini         | Google Gemini Pro LLM API                 |
+
+---
+
+## 3  スコープ
+
+### 3.1  対象範囲
+
+* Slack からの動画ファイル受付（最大 1 GB）
+* Webhook Server で以下フローを実行
+
+  1. 動画→音声変換（ffmpeg）
+  2. 文字起こし（Google Cloud Speech-to-Text）
+  3. Gemini で要約生成
+  4. 議事録作成
+  5. Notion DB へ保存
+* インフラ: Next.js（API 中心）+ Vercel デプロイ
+
+### 3.2  対象外
+
+* UI フロントエンド
+* 多言語対応
+* 会議以外のメディア種別
+
+---
+
+## 4  ステークホルダー
+
+| 役割        | 氏名/部署 | 責務      |
+| --------- | ----- | ------- |
+| プロダクトオーナー | －     | 要件承認    |
+| 開発リーダー    | －     | 設計・実装統括 |
+| QA        | －     | 受入試験    |
+
+---
+
+## 5  要件一覧
+
+### 5.1  機能要件（FR）
+
+| ID        | 要件                                                                                                                                            | 優先度    | 備考                |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ----------------- |
+| **FR-01** | Slack から動画ファイル (≤ 1 GB) を Webhook Server へ受信                                                                                                  | High   | file\_shared イベント |
+| **FR-02** | 動画が GCS へ正常アップロード完了した時点で Slack スレッドへ **Upload OK** を返信                                                                                        | High   | thread\_ts 使用     |
+| **FR-03** | 動画ファイルを音声ファイルへ自動変換                                                                                                                            | High   | ffmpeg            |
+| **FR-04** | 音声ファイルを Google Cloud Speech-to-Text で文字起こし                                                                                                    | High   |                   |
+| **FR-05** | 文字起こし結果を Gemini で要約し以下 7 セクションを生成<br>① 会議名<br>② 会議の基本情報<br>③ 会議の目的とアジェンダ<br>④ 会議の内容（議論と決定事項）<br>⑤ 今後のスケジュールとタスク管理<br>⑥ 共有情報・添付資料<br>⑦ その他特記事項 | High   |                   |
+| **FR-06** | 要約結果を Notion DB にページ作成<br>会議名→Title その他 6 項目→Rich text                                                                                        | High   |                   |
+| **FR-07** | 議事録ページ作成完了を Slack スレッドに URL 付きで通知                                                                                                             | Medium |                   |
+
+> **Slack への動画送信時**
+> 本文に `YYYY/MM/DD`（または `年/月/日`）形式の日付・コンサルタント名・クライアント名を含める
+
+### 5.2  非機能要件（NFR）
+
+| ID         | 要件                            | 優先度    | 備考             |
+| ---------- | ----------------------------- | ------ | -------------- |
+| **NFR-01** | アップロード受付から Notion 保存まで 30 分以内 | High   | End-to-End SLA |
+| **NFR-02** | 動画ファイルサイズ上限 1 GB              | High   |                |
+
+---
+
+## 6  システム構成（概要）
+
+```mermaid
+flowchart LR
+  Slack[Slack Workspace] -->|file_shared| VercelWebhook[Webhook Server<br>(Next.js / Vercel Fn)]
+  VercelWebhook -->|Upload| GCS[(Google Cloud Storage)]
+  VercelWebhook -->|Publish Job| PubSub((Cloud Pub/Sub))
+  PubSub --> CloudRun[Cloud Run Job<br>FFmpeg + STT]
+  CloudRun -->|Audio + Transcript| GCS
+  CloudRun -->|Callback| VercelAPI[Next.js API Route]
+  VercelAPI -->|Summarize| Gemini[Gemini API]
+  VercelAPI -->|Create Page| NotionDB[(Notion Database)]
+  NotionDB -->|ACK| Slack
+```
+
+**補足**
+
+1. Webhook Server が Slack イベント受信と GCS 転送を担当
+2. 重い処理は Cloud Run へオフロードしタイムアウトを回避
+3. Gemini で要約→Notion DB へ保存し Slack へ完了通知
+
+---
+
+## 7  業務フロー（時系列）
+
+```mermaid
+sequenceDiagram
+  participant S as Slack
+  participant V as Vercel Fn
+  participant G as GCS
+  participant P as Pub/Sub
+  participant C as Cloud Run
+  participant Ge as Gemini
+  participant N as Notion
+  S->>V: file_shared (動画 URL)
+  V->>G: 動画 COPY
+  V-->>S: thread reply "Upload OK"
+  V->>P: publish(jobId)
+  C-->>P: subscribe(jobId)
+  C->>G: GET 動画
+  C->>C: FFmpeg 変換
+  C->>GoogleSTT: Speech-to-Text
+  C-->>G: transcript.json
+  C->>V: callback(jobId, transcriptURL)
+  V->>Ge: 要約・議事録生成
+  Ge-->>V: 議事録
+  V->>N: createPage
+  N-->>S: 完了メッセージ
+```
+
+---
+
+## 8  データ要件
+
+### 8.1  GCS オブジェクト設計
+
+| パス例                                        | 説明      |
+| ------------------------------------------ | ------- |
+| `meetings/{yyyyMMdd_HHmm}/{original}.mp4`  | 元動画     |
+| `meetings/{yyyyMMdd_HHmm}/audio.flac`      | 抽出音声    |
+| `meetings/{yyyyMMdd_HHmm}/transcript.json` | 文字起こし結果 |
+
+### 8.2  Notion DB スキーマ
+
+| プロパティ名          | 型         | 必須 | 備考                     |
+| --------------- | --------- | -- | ---------------------- |
+| 会議名             | **Title** | ✓  |                        |
+| 会議の基本情報         | Rich text | ✓  | 日付・コンサルタント名・クライアント名を含む |
+| 会議の目的とアジェンダ     | Rich text |    |                        |
+| 会議の内容（議論と決定事項）  | Rich text |    |                        |
+| 今後のスケジュールとタスク管理 | Rich text |    |                        |
+| 共有情報・添付資料       | Rich text |    |                        |
+| その他特記事項         | Rich text |    |                        |
+| Transcript\_URL | URL       | ✓  |                        |
+| Video\_URL      | URL       |    |                        |
+
+---
+
+## 9  セキュリティ・認証
+
+### 9.1  アクセス制御
+
+* Google IAM は必要最小限のロールのみ付与
+* Slack/Notion インテグレーションも最小権限スコープで発行
+
+---
+
+## 10  運用・保守（案）
+
+* **ログ監視**: Cloud Logging と Vercel Logs で集中管理
+* **失敗アラート**: エラー出力時に Slack #alert へ通知
+* **バックアップ**: Notion DB はエクスポート自動化 GCS オブジェクトは Lifecycle で 30 日保持
+
+---
+
+## 11  リスク・前提条件
+
+| 区分  | 内容                               | 対応策                    |
+| --- | -------------------------------- | ---------------------- |
+| リスク | Cloud Run 処理が 30 分を超過            | ジョブ分割または FFmpeg 並列化で短縮 |
+| 前提  | Slack ワークスペースのファイルサイズ上限が 1 GB 以上 | 超過時は事前圧縮をユーザーに周知       |
+
+---
+
+## 12  受入基準（抜粋）
+
+* MAX1 GB 動画をアップロードし 30 分以内に Notion ページが生成されている
+* 議事録ページに 7 セクションが正しく格納されている
+* Slack スレッドにアップロード完了と議事録完了の 2 通知が出る
+
+---
+
+## 14  変更管理
+
+* 変更要望はプロダクトオーナーが JIRA チケットを起票しステークホルダー合意後に実施
+
+---
+
+## 15  参考資料
+
+* Google Cloud Speech-to-Text ドキュメント
+* Notion API Reference
+* Slack Events API Reference
+
+---
+
+## 16  デプロイ方法（現場運用手順まとめ）
+
+### 16.1 Webhook Server（Next.js / Vercel Fn）
+- **Vercelダッシュボードから「Import Project」→GitHub連携で自動デプロイ**
+- 環境変数はVercelの「Environment Variables」で管理
+- 手動デプロイ例：
+  ```sh
+  vercel --prod
+  ```
+
+### 16.2 Cloud Run Job（動画処理コンテナ）
+- **DockerイメージをArtifact Registryにpushし、Cloud Runでデプロイ**
+- デプロイ手順例：
+  ```sh
+  # Dockerビルド
+  docker build -t asia-northeast1-docker.pkg.dev/mettinglog/dagitoru-repository/video-processor:latest .
+  # Artifact Registryへpush
+  docker push asia-northeast1-docker.pkg.dev/mettinglog/dagitoru-repository/video-processor:latest
+  # Cloud Runデプロイ
+  gcloud run deploy video-processing-service \
+    --image asia-northeast1-docker.pkg.dev/mettinglog/dagitoru-repository/video-processor:latest \
+    --region asia-northeast1 \
+    --platform managed \
+    --allow-unauthenticated \
+    --concurrency=1
+  ```
+- 環境変数・SecretsはCloud Runの「環境変数」またはSecret Managerで管理
+
+### 16.3 Notion Retry Job（Cloud Run Job）
+- Cloud Run Jobとして同様にデプロイ
+- Dockerイメージ名・サービス名を適宜変更
+
+### 16.4 Artifact Registry
+- GCPコンソールまたはTerraformでリポジトリ作成
+- 例：
+  ```sh
+  gcloud artifacts repositories create dagitoru-repository \
+    --repository-format=docker \
+    --location=asia-northeast1 \
+    --description="動画処理用"
+  ```
+
+### 16.5 TerraformによるIaC運用
+- infraディレクトリで`terraform apply`を実行
+- 例：
+  ```sh
+  cd infra
+  terraform init
+  terraform apply
+  ```
+- サービスアカウント、IAM、Artifact Registry、Cloud Run、Pub/Sub等を一括管理
+
+---
+
+================
+File: policy.yaml
+================
+bindings:
+- members:
+  - allUsers
+  role: roles/run.invoker
+etag: BwY1R_g3YAw=
+version: 1
+
+================
+File: .eslintrc.json
+================
+{
+  "extends": "next/core-web-vitals",
+  "rules": {
+    "@typescript-eslint/no-explicit-any": "off",
+    "@typescript-eslint/no-unused-vars": "off",
+    "@typescript-eslint/ban-ts-comment": "off"
+  }
+}
+
+================
+File: app/api/gemini/analyze-text/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import { Client } from '@notionhq/client';
+import { CONFIG } from '@app/lib/config';
+import { sendSlackMessage } from '@app/lib/utils';
+import axios from 'axios';
+
+// Notionクライアント初期化
+const notion = new Client({
+  auth: CONFIG.NOTION_API_KEY,
+});
+
+// テキスト解析エンドポイント
+export async function POST(req: NextRequest) {
+  try {
+    const { text, metadata = {}, jobId } = await req.json();
+    
+    if (!text) {
+      return NextResponse.json(
+        { error: 'Text content is required' },
+        { status: 400 }
+      );
+    }
+    
+    // Gemini APIに送信するプロンプト
+    const prompt = generateTextAnalysisPrompt(text, metadata);
+    
+    try {
+      // Gemini APIを呼び出し
+      const response = await callGeminiAPI(prompt);
+      
+      // レスポンスを解析して整形
+      const summary = parseGeminiResponse(response);
+      
+      // Notionに保存
+      const notionPage = await createNotionPage(summary, null, metadata);
+      
+      // Slackに通知（チャンネルとスレッド情報がある場合）
+      if (metadata.channel && (metadata.thread_ts || metadata.ts)) {
+        await sendSlackMessage(
+          metadata.channel,
+          `テキスト内容から議事録を作成しました: ${notionPage.url}`,
+          metadata.thread_ts || metadata.ts
+        );
+      }
+      
+      return NextResponse.json({
+        jobId,
+        success: true,
+        summary,
+        notionPage
+      });
+    } catch (error) {
+      console.error('Error in text analysis:', error);
+      return NextResponse.json(
+        { error: `Text analysis error: ${(error as Error).message}` },
+        { status: 500 }
+      );
+    }
+  } catch (error) {
+    console.error('Invalid request payload:', error);
+    return NextResponse.json(
+      { error: 'Invalid request payload' },
+      { status: 400 }
+    );
+  }
+}
+
+// テキスト解析用のプロンプトを生成する関数
+function generateTextAnalysisPrompt(text: string, metadata: any): string {
+  const { date, client, consultant } = metadata;
+  
+  // 日付、クライアント、コンサルタントの情報を追加
+  let contextInfo = '';
+  if (date) contextInfo += `日付: ${date}\n`;
+  if (client) contextInfo += `クライアント: ${client}\n`;
+  if (consultant) contextInfo += `コンサルタント: ${consultant}\n`;
+  
+  return `以下のテキストを解析して、会議議事録の形式にまとめてください。
+  
+${contextInfo}
+
+# テキスト内容
+${text}
+
+# 出力形式 - 以下の7つのセクションにわけて要約してください（JSON形式）
+{
+  "meetingName": "会議のタイトル・議題", 
+  "basicInfo": "日付、場所、参加者など",
+  "purpose": "会議の目的とアジェンダ",
+  "content": "会議の主要な議論と決定事項",
+  "schedule": "今後のスケジュールとタスク管理",
+  "resources": "共有された資料や情報",
+  "notes": "その他特記事項"
+}
+
+# 指示
+- 各セクションは要点をまとめた明確で簡潔な段落にしてください
+- 必要に応じて箇条書きを使用してください
+- 提供されたテキストにない情報は推測せず、記載されている情報のみを使用してください
+- 出力は必ずJSON形式でお願いします`;
+}
+
+// Gemini APIを呼び出す関数
+async function callGeminiAPI(prompt: string) {
+  try {
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        contents: [
+          {
+            parts: [
+              {
+                text: prompt
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          topK: 40,
+          topP: 0.95,
+          maxOutputTokens: 4096,
+        }
+      }
+    );
+    
+    return response.data;
+  } catch (error) {
+    console.error('Gemini API error:', error);
+    throw error;
+  }
+}
+
+// Gemini APIのレスポンスを解析する関数
+function parseGeminiResponse(response: any) {
+  try {
+    // レスポンスからテキスト部分を抽出
+    const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (!text) {
+      throw new Error('No text content in Gemini response');
+    }
+    
+    // JSONテキストを抽出（正規表現でJSONブロックを検出）
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON content found in response');
+    }
+    
+    // JSONをパース
+    const summaryJson = JSON.parse(jsonMatch[0]);
+    
+    // 期待されるセクションが存在するか確認
+    const requiredSections = [
+      'meetingName',
+      'basicInfo',
+      'purpose',
+      'content',
+      'schedule',
+      'resources',
+      'notes'
+    ];
+    
+    // 不足しているセクションに空文字を設定
+    for (const section of requiredSections) {
+      if (!summaryJson[section]) {
+        summaryJson[section] = '';
+      }
+    }
+    
+    return summaryJson;
+  } catch (error) {
+    console.error('Error parsing Gemini response:', error);
+    // 解析エラーの場合はデフォルトの構造を返す
+    return {
+      meetingName: 'テキスト分析',
+      basicInfo: '情報なし',
+      purpose: '',
+      content: '',
+      schedule: '',
+      resources: '',
+      notes: 'Geminiの応答解析中にエラーが発生しました'
+    };
+  }
+}
+
+// Notionページを作成する関数
+async function createNotionPage(summary: any, transcriptUrl: string | null, metadata: any = {}) {
+  try {
+    const { meetingName, basicInfo, purpose, content, schedule, resources, notes } = summary;
+    
+    // Notionページプロパティ
+    const pageProperties: any = {
+      '会議名': {
+        title: [
+          {
+            text: {
+              content: meetingName || 'テキスト分析',
+            },
+          },
+        ],
+      },
+      '会議の基本情報': {
+        rich_text: [
+          {
+            text: {
+              content: basicInfo || '',
+            },
+          },
+        ],
+      },
+      '会議の目的とアジェンダ': {
+        rich_text: [
+          {
+            text: {
+              content: purpose || '',
+            },
+          },
+        ],
+      },
+      '会議の内容（議論と決定事項）': {
+        rich_text: [
+          {
+            text: {
+              content: content || '',
+            },
+          },
+        ],
+      },
+      '今後のスケジュールとタスク管理': {
+        rich_text: [
+          {
+            text: {
+              content: schedule || '',
+            },
+          },
+        ],
+      },
+      '共有情報・添付資料': {
+        rich_text: [
+          {
+            text: {
+              content: resources || '',
+            },
+          },
+        ],
+      },
+      'その他特記事項': {
+        rich_text: [
+          {
+            text: {
+              content: notes || '',
+            },
+          },
+        ],
+      }
+    };
+    
+    // トランスクリプトURLがある場合は追加
+    if (transcriptUrl) {
+      pageProperties['Transcript_URL'] = {
+        url: transcriptUrl,
+      };
+    }
+    
+    // NotionのDBにページを作成
+    const response = await notion.pages.create({
+      parent: {
+        database_id: CONFIG.NOTION_DATABASE_ID,
+      },
+      properties: pageProperties,
+    });
+    
+    return {
+      id: response.id,
+      url: (response as any).url || '',
+      title: meetingName || 'テキスト分析',
+    };
+  } catch (error) {
+    console.error('Error creating Notion page:', error);
+    throw error;
+  }
+}
+
+================
+File: app/api/gemini/summarize/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import { CONFIG } from '@app/lib/config';
+import axios from 'axios';
+
+// Gemini APIでトランスクリプトを要約するエンドポイント
+export async function POST(req: NextRequest) {
+  try {
+    const { transcript, metadata = {}, jobId } = await req.json();
+    
+    if (!transcript) {
+      return NextResponse.json(
+        { error: 'Transcript content is required' },
+        { status: 400 }
+      );
+    }
+    
+    // Gemini APIに送信するプロンプト
+    const prompt = generateSummaryPrompt(transcript, metadata);
+    
+    try {
+      // Gemini APIを呼び出し
+      const response = await callGeminiAPI(prompt);
+      
+      // レスポンスを解析して整形
+      const summary = parseGeminiResponse(response);
+      
+      return NextResponse.json({
+        jobId,
+        success: true,
+        summary
+      });
+    } catch (error) {
+      console.error('Error calling Gemini API:', error);
+      return NextResponse.json(
+        { error: `Gemini API error: ${(error as Error).message}` },
+        { status: 500 }
+      );
+    }
+  } catch (error) {
+    console.error('Invalid request payload:', error);
+    return NextResponse.json(
+      { error: 'Invalid request payload' },
+      { status: 400 }
+    );
+  }
+}
+
+// 要約用のプロンプトを生成する関数
+function generateSummaryPrompt(transcript: string, metadata: any): string {
+  const { date, client, consultant } = metadata;
+  
+  // 日付、クライアント、コンサルタントの情報を追加
+  let contextInfo = '';
+  if (date) contextInfo += `日付: ${date}\n`;
+  if (client) contextInfo += `クライアント: ${client}\n`;
+  if (consultant) contextInfo += `コンサルタント: ${consultant}\n`;
+  
+  return `以下の会議の文字起こしを、日本語で要約して議事録形式にまとめてください。
+  
+${contextInfo}
+
+# 文字起こし内容
+${transcript}
+
+# 出力形式 - 以下の7つのセクションにわけて要約してください（JSON形式）
+{
+  "meetingName": "会議のタイトル・議題", 
+  "basicInfo": "日付、場所、参加者など",
+  "purpose": "会議の目的とアジェンダ",
+  "content": "会議の主要な議論と決定事項",
+  "schedule": "今後のスケジュールとタスク管理",
+  "resources": "共有された資料や情報",
+  "notes": "その他特記事項"
+}
+
+# 指示
+- 各セクションは要点をまとめた明確で簡潔な段落にしてください
+- 主要な議論点と決定事項に焦点を当ててください
+- 必要に応じて箇条書きを使用してください
+- 対話の冗長な部分や関係のない雑談は省略してください
+- 文字起こしにない情報は推測せず、記載されている情報のみを使用してください
+- 要約は1000文字以内にまとめてください
+- 出力は必ずJSON形式でお願いします`;
+}
+
+// Gemini APIを呼び出す関数
+async function callGeminiAPI(prompt: string) {
+  try {
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        contents: [
+          {
+            parts: [
+              {
+                text: prompt
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          topK: 40,
+          topP: 0.95,
+          maxOutputTokens: 8192,
+        }
+      }
+    );
+    
+    return response.data;
+  } catch (error) {
+    console.error('Gemini API error:', error);
+    throw error;
+  }
+}
+
+// Gemini APIのレスポンスを解析する関数
+function parseGeminiResponse(response: any) {
+  try {
+    // レスポンスからテキスト部分を抽出
+    const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (!text) {
+      throw new Error('No text content in Gemini response');
+    }
+    
+    // JSONテキストを抽出（正規表現でJSONブロックを検出）
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No JSON content found in response');
+    }
+    
+    // JSONをパース
+    const summaryJson = JSON.parse(jsonMatch[0]);
+    
+    // 期待されるセクションが存在するか確認
+    const requiredSections = [
+      'meetingName',
+      'basicInfo',
+      'purpose',
+      'content',
+      'schedule',
+      'resources',
+      'notes'
+    ];
+    
+    // 不足しているセクションに空文字を設定
+    for (const section of requiredSections) {
+      if (!summaryJson[section]) {
+        summaryJson[section] = '';
+      }
+    }
+    
+    return summaryJson;
+  } catch (error) {
+    console.error('Error parsing Gemini response:', error);
+    // 解析エラーの場合はデフォルトの構造を返す
+    return {
+      meetingName: '会議議事録',
+      basicInfo: '情報なし',
+      purpose: '',
+      content: '',
+      schedule: '',
+      resources: '',
+      notes: 'Geminiの応答解析中にエラーが発生しました'
+    };
+  }
+}
+
+================
+File: app/api/jobs/retry/[jobId]/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import { CONFIG } from '@app/lib/config';
+import { ProcessingJob } from '@app/lib/types';
+// import { startCloudRunJob } from '@app/lib/utils';
+
+// 特定のジョブを再試行するためのエンドポイント
+export async function POST(req: NextRequest) {
+  try {
+    // URLからjobIdを抽出
+    const { pathname } = new URL(req.url);
+    const jobId = pathname.split('/').pop();
+    
+    if (!jobId) {
+      return NextResponse.json(
+        { error: 'Job ID is required' },
+        { status: 400 }
+      );
+    }
+    
+    // ジョブの詳細情報を取得（実際にはデータベースやRedisなどから取得）
+    // この例では簡略化のためリクエストボディから取得
+    const jobData = await req.json();
+    
+    // ジョブ情報を検証
+    if (!jobData) {
+      return NextResponse.json(
+        { error: 'Job data is required' },
+        { status: 400 }
+      );
+    }
+    
+    // 必須フィールドを確認
+    const requiredFields = ['channel', 'ts', 'user'];
+    const missingFields = requiredFields.filter(field => !jobData[field]);
+    
+    if (missingFields.length > 0) {
+      return NextResponse.json(
+        { error: `Missing required fields: ${missingFields.join(', ')}` },
+        { status: 400 }
+      );
+    }
+    
+    // 再試行用のジョブを作成
+    const retryJob: ProcessingJob = {
+      id: jobId,
+      fileIds: jobData.fileIds,
+      text: jobData.text,
+      channel: jobData.channel,
+      ts: jobData.ts,
+      thread_ts: jobData.thread_ts,
+      user: jobData.user,
+      status: 'pending',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    // メタデータがある場合は追加
+    if (jobData.metadata) {
+      (retryJob as any).metadata = jobData.metadata;
+    }
+    
+    // Cloud Run Jobを再開する代わりに成功を返す
+    // const result = await startCloudRunJob(retryJob);
+    const result = true; // スタブ実装
+    
+    if (!result) {
+      return NextResponse.json(
+        { error: 'Failed to start Cloud Run Job' },
+        { status: 500 }
+      );
+    }
+    
+    return NextResponse.json({
+      success: true,
+      message: `Job ${jobId} has been restarted`
+    });
+  } catch (error) {
+    console.error('Error retrying job:', error);
+    return NextResponse.json(
+      { error: `Failed to retry job: ${(error as Error).message}` },
+      { status: 500 }
+    );
+  }
+}
+
+================
+File: app/api/notion/create-db/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import { createMeetingsDatabase } from '@app/lib/notion/setup-db';
+import { logger } from '@app/lib/utils/logger';
+
+/**
+ * 新しいNotionデータベースを作成するAPIエンドポイント
+ */
+export async function POST(req: NextRequest) {
+  try {
+    // 環境変数の確認
+    if (!process.env.NOTION_API_KEY) {
+      return NextResponse.json(
+        { error: 'NOTION_API_KEYが設定されていません' },
+        { status: 500 }
+      );
+    }
+
+    // リクエストボディを取得
+    const requestData = await req.json();
+    const { parentPageId, databaseName } = requestData;
+
+    // 親ページIDは必須
+    if (!parentPageId) {
+      return NextResponse.json(
+        { error: '親ページIDが必要です' },
+        { status: 400 }
+      );
+    }
+
+    // データベースを作成
+    const response = await createMeetingsDatabase(
+      parentPageId,
+      databaseName || 'デジトル面談履歴テスト開発'
+    );
+
+    return NextResponse.json({
+      success: true,
+      message: '新しいデータベースが作成されました',
+      database_id: response.id,
+      database_url: (response as any).url || ''
+    });
+
+  } catch (error) {
+    logger.error(`データベース作成中にエラーが発生しました: ${error}`);
+    return NextResponse.json(
+      { error: `データベース作成エラー: ${(error as Error).message}` },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * ヘルスチェック用のエンドポイント
+ */
+export async function GET(req: NextRequest) {
+  return NextResponse.json({
+    status: 'ok',
+    message: 'Notionデータベース作成APIは正常に動作しています'
+  });
+}
+
+================
+File: app/api/notion/setup-db/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import { setupDatabaseSchema } from '@app/lib/notion/setup-db';
+import { logger } from '@app/lib/utils/logger';
+
+/**
+ * Notionデータベースのスキーマを設定するAPIエンドポイント
+ */
+export async function POST(req: NextRequest) {
+  try {
+    // 環境変数の確認
+    if (!process.env.NOTION_API_KEY || !process.env.NOTION_MEETINGS_DB_ID) {
+      return NextResponse.json(
+        { error: 'NOTION_API_KEYまたはNOTION_MEETINGS_DB_IDが設定されていません' },
+        { status: 500 }
+      );
+    }
+
+    // データベーススキーマの設定
+    const response = await setupDatabaseSchema();
+
+    return NextResponse.json({
+      success: true,
+      message: 'データベーススキーマの設定が完了しました',
+      database_id: response.id
+    });
+
+  } catch (error) {
+    logger.error(`データベーススキーマ設定中にエラーが発生しました: ${error}`);
+    return NextResponse.json(
+      { error: `スキーマ設定エラー: ${(error as Error).message}` },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * ヘルスチェック用のエンドポイント
+ */
+export async function GET(req: NextRequest) {
+  return NextResponse.json({
+    status: 'ok',
+    message: 'Notionデータベーススキーマ設定APIは正常に動作しています'
+  });
+}
+
+================
+File: app/api/slack/file-handler/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import { WebClient } from '@slack/web-api';
+import { v4 as uuidv4 } from 'uuid';
+import { CONFIG } from '@/app/lib/config';
+import { SlackEventPayload, ProcessingJob, SlackFile } from '@/app/lib/types';
+import { uploadFileToGCS, sendSlackMessage, startCloudRunJob, getFileType } from '@/app/lib/utils';
+
+// Slackクライアント初期化
+const slackClient = new WebClient(CONFIG.SLACK_TOKEN);
+
+// ファイル処理エンドポイント
+export async function POST(req: NextRequest) {
+  try {
+    const payload = await req.json() as SlackEventPayload;
+    const { event } = payload;
+    
+    // ファイル情報を取得
+    let files: SlackFile[] = [];
+    
+    if (event.files) {
+      files = event.files;
+    } else {
+      // file_sharedイベントの場合、追加でファイル情報を取得
+      try {
+        const fileInfoResponse = await slackClient.files.info({
+          file: event.file_id || '',
+        });
+        
+        if (fileInfoResponse.file) {
+          files = [fileInfoResponse.file as unknown as SlackFile];
+        }
+      } catch (error) {
+        console.error('Failed to fetch file info:', error);
+        return NextResponse.json({ error: 'Failed to fetch file info' }, { status: 500 });
+      }
+    }
+    
+    if (files.length === 0) {
+      return NextResponse.json({ error: 'No files found' }, { status: 400 });
+    }
+    
+    // ジョブID生成
+    const jobId = uuidv4();
+    
+    // 各ファイルをGCSにアップロード
+    const filePromises = files.map(async (file) => {
+      // ファイルサイズチェック
+      if (file.size > CONFIG.MAX_FILE_SIZE) {
+        await sendSlackMessage(
+          event.channel,
+          `ファイルサイズが大きすぎます（最大1GB）: ${file.name}`,
+          event.thread_ts || event.ts
+        );
+        return null;
+      }
+      
+      // ファイルタイプの判別
+      const fileType = getFileType(file);
+      
+      // GCSにアップロード
+      const uploadResult = await uploadFileToGCS(
+        file.url_private,
+        jobId,
+        file.name
+      );
+      
+      if (!uploadResult.success) {
+        await sendSlackMessage(
+          event.channel,
+          `ファイルのアップロードに失敗しました: ${file.name}`,
+          event.thread_ts || event.ts
+        );
+        return null;
+      }
+      
+      return {
+        id: file.id,
+        name: file.name,
+        type: fileType,
+        gcsPath: uploadResult.path,
+        gcsUrl: uploadResult.url
+      };
+    });
+    
+    // すべてのファイルのアップロード結果を待機
+    const fileResults = await Promise.all(filePromises);
+    const validFiles = fileResults.filter(Boolean);
+    
+    if (validFiles.length === 0) {
+      return NextResponse.json({ error: 'No valid files uploaded' }, { status: 400 });
+    }
+    
+    // ジョブ作成
+    const job: ProcessingJob = {
+      id: jobId,
+      fileIds: validFiles.map(file => file?.id as string),
+      channel: event.channel,
+      ts: event.ts,
+      thread_ts: event.thread_ts,
+      user: event.user,
+      status: 'pending',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    // Slackにアップロード完了通知
+    await sendSlackMessage(
+      event.channel,
+      `Upload OK: ${validFiles.length}個のファイルを処理中です`,
+      event.thread_ts || event.ts
+    );
+    
+    // Cloud Run Jobを開始
+    await startCloudRunJob(job);
+    
+    return NextResponse.json({ jobId, success: true });
+  } catch (error) {
+    console.error('Error processing file:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+================
+File: app/lib/notion/client.ts
+================
+import { Client } from '@notionhq/client';
+import { logger } from '@app/lib/utils/logger';
+
+// 環境変数からNotionの設定を取得
+const NOTION_API_KEY = process.env.NOTION_API_KEY;
+const NOTION_MEETINGS_DB_ID = process.env.NOTION_MEETINGS_DB_ID;
+
+// API キーが設定されていない場合はエラーログを出力
+if (!NOTION_API_KEY) {
+  logger.error('NOTION_API_KEY is not set in environment variables');
+}
+
+if (!NOTION_MEETINGS_DB_ID) {
+  logger.error('NOTION_MEETINGS_DB_ID is not set in environment variables');
+}
+
+// Notion クライアントの初期化
+export const notionClient = new Client({
+  auth: NOTION_API_KEY,
+});
+
+// 会議データベースIDを取得する関数
+export function getMeetingsDbId(): string {
+  if (!NOTION_MEETINGS_DB_ID) {
+    throw new Error('NOTION_MEETINGS_DB_ID is not set in environment variables');
+  }
+  return NOTION_MEETINGS_DB_ID;
+}
+
+================
+File: app/lib/notion/meetings.ts
+================
+import { notionClient, getMeetingsDbId } from './client';
+import { MeetingInput, MeetingRecord, NotionPropertyValue } from './types';
+import { logger } from '@app/lib/utils/logger';
+
+/**
+ * 会議記録をNotionデータベースに作成する
+ */
+export async function createMeetingRecord(meeting: MeetingInput): Promise<MeetingRecord> {
+  try {
+    const databaseId = getMeetingsDbId();
+    
+    logger.info(`Creating meeting record in Notion: ${meeting.title}`);
+    
+    // メタデータをJSON文字列に変換
+    const metadataString = meeting.metadata 
+      ? JSON.stringify(meeting.metadata, null, 2) 
+      : "";
+    
+    // タスクをJSON文字列に変換
+    const tasksString = meeting.tasks && meeting.tasks.length > 0 
+      ? JSON.stringify(meeting.tasks, null, 2) 
+      : "";
+    
+    // Notionページのプロパティを準備
+    const properties: Record<string, any> = {
+      // タイトル
+      "タイトル": {
+        title: [
+          {
+            text: {
+              content: meeting.title
+            }
+          }
+        ]
+      },
+      
+      // 日付
+      "日付": {
+        date: {
+          start: meeting.date
+        }
+      },
+      
+      // 要約
+      "要約": {
+        rich_text: [
+          {
+            text: {
+              content: meeting.summary.substring(0, 2000) // Notionの制限に合わせる
+            }
+          }
+        ]
+      },
+      
+      // ジョブID
+      "ジョブID": {
+        rich_text: [
+          {
+            text: {
+              content: meeting.jobId
+            }
+          }
+        ]
+      },
+      
+      // 参加者
+      "参加者": {
+        multi_select: meeting.participants.map(name => ({ name: name.substring(0, 100) }))
+      }
+    };
+    
+    // 決定事項がある場合
+    if (meeting.decisions && meeting.decisions.length > 0) {
+      properties["決定事項"] = {
+        rich_text: [
+          {
+            text: {
+              content: meeting.decisions.join("\n")
+            }
+          }
+        ]
+      };
+    }
+    
+    // 文字起こしを段落ブロックに分割
+    const transcriptBlocks = createTranscriptBlocks(meeting.transcript);
+    
+    // 基本ブロック（文字起こし以外の部分）を準備
+    const baseBlocks = [
+      // 文字起こし全文見出し
+      {
+        object: "block",
+        type: "heading_2",
+        heading_2: {
+          rich_text: [
+            {
+              type: "text",
+              text: {
+                content: "文字起こし全文"
+              }
+            }
+          ]
+        }
+      },
+      
+      // ここに文字起こしのブロックが挿入される
+      
+      // タスク一覧見出し
+      {
+        object: "block",
+        type: "heading_2",
+        heading_2: {
+          rich_text: [
+            {
+              type: "text",
+              text: {
+                content: "タスク一覧"
+              }
+            }
+          ]
+        }
+      },
+      {
+        object: "block",
+        type: "paragraph",
+        paragraph: {
+          rich_text: [
+            {
+              type: "text",
+              text: {
+                content: tasksString || "タスクはありません"
+              }
+            }
+          ]
+        }
+      },
+      
+      // メタデータ見出し
+      {
+        object: "block",
+        type: "heading_2",
+        heading_2: {
+          rich_text: [
+            {
+              type: "text",
+              text: {
+                content: "メタデータ"
+              }
+            }
+          ]
+        }
+      },
+      {
+        object: "block",
+        type: "code",
+        code: {
+          rich_text: [
+            {
+              type: "text",
+              text: {
+                content: metadataString || "{}"
+              }
+            }
+          ],
+          language: "json"
+        }
+      }
+    ];
+    
+    // 文字起こしのブロックを見出しの後に挿入
+    const children = [
+      baseBlocks[0], // 文字起こし見出し
+      ...transcriptBlocks,
+      ...baseBlocks.slice(1) // 残りのブロック
+    ];
+    
+    // Notionページを作成
+    const response = await notionClient.pages.create({
+      parent: {
+        database_id: databaseId
+      },
+      properties: properties,
+      children: children
+    });
+    
+    logger.info(`Successfully created meeting record: ${response.id}`);
+    
+    return {
+      id: response.id,
+      url: (response as any).url || '', // Notionの型定義に合わせてキャスト
+      title: meeting.title,
+      date: meeting.date,
+      summary: meeting.summary
+    };
+    
+  } catch (error) {
+    logger.error(`Error creating meeting record: ${error}`);
+    throw error;
+  }
+}
+
+/**
+ * 長いテキストを複数の段落ブロックに分割する
+ * Notionでは1つのリッチテキストブロックは2000文字までの制限がある
+ */
+function createTranscriptBlocks(text: string, maxLength = 2000): any[] {
+  if (!text) return [{
+    object: "block",
+    type: "paragraph",
+    paragraph: {
+      rich_text: []
+    }
+  }];
+  
+  const blocks = [];
+  
+  // テキストを約2000文字ごとに分割
+  for (let i = 0; i < text.length; i += maxLength) {
+    const chunk = text.substring(i, i + maxLength);
+    
+    blocks.push({
+      object: "block",
+      type: "paragraph",
+      paragraph: {
+        rich_text: [
+          {
+            type: "text",
+            text: {
+              content: chunk
+            }
+          }
+        ]
+      }
+    });
+  }
+  
+  return blocks;
+}
+
+/**
+ * ジョブIDから会議記録を検索する
+ */
+export async function findMeetingByJobId(jobId: string): Promise<MeetingRecord | null> {
+  try {
+    const databaseId = getMeetingsDbId();
+    
+    // ジョブIDでフィルタリングしてデータベースを検索
+    const response = await notionClient.databases.query({
+      database_id: databaseId,
+      filter: {
+        property: "ジョブID",
+        rich_text: {
+          equals: jobId
+        }
+      }
+    });
+    
+    if (response.results.length === 0) {
+      return null;
+    }
+    
+    const page = response.results[0];
+    
+    // @ts-ignore - Notionの型が複雑なため
+    const title = page.properties["タイトル"]?.title?.[0]?.plain_text || "無題";
+    // @ts-ignore
+    const date = page.properties["日付"]?.date?.start || new Date().toISOString();
+    // @ts-ignore
+    const summary = page.properties["要約"]?.rich_text?.[0]?.plain_text || "";
+    
+    return {
+      id: page.id,
+      url: (page as any).url || '',
+      title,
+      date,
+      summary
+    };
+    
+  } catch (error) {
+    logger.error(`Error finding meeting by job ID: ${error}`);
+    return null;
+  }
+}
+
+================
+File: app/lib/notion/setup-db.ts
+================
+import { notionClient, getMeetingsDbId } from './client';
+import { logger } from '@app/lib/utils/logger';
+
+/**
+ * Notionデータベースのスキーマを設定する関数
+ * 会議名のみをタイトル型にし、他のフィールドはすべてテキスト型に設定
+ */
+export async function setupDatabaseSchema() {
+  try {
+    const databaseId = getMeetingsDbId();
+    logger.info(`Notionデータベースのスキーマを設定します: ${databaseId}`);
+
+    // データベーススキーマの更新
+    const response = await notionClient.databases.update({
+      database_id: databaseId,
+      properties: {
+        // タイトル型のプロパティ
+        "会議名": {
+          title: {}
+        },
+        // テキスト型のプロパティ
+        "日時": {
+          rich_text: {}
+        },
+        "クライアント名": {
+          rich_text: {}
+        },
+        "コンサルタント名": {
+          rich_text: {}
+        },
+        "会議の基本情報": {
+          rich_text: {}
+        },
+        "会議の目的とアジェンダ": {
+          rich_text: {}
+        },
+        "会議の内容": {
+          rich_text: {}
+        },
+        "今後のスケジュール": {
+          rich_text: {}
+        },
+        "共有情報・添付": {
+          rich_text: {}
+        },
+        "その他特記事項": {
+          rich_text: {}
+        },
+        "ジョブID": {
+          rich_text: {}
+        }
+      }
+    });
+
+    logger.info(`データベーススキーマの更新が完了しました: ${response.id}`);
+    return response;
+  } catch (error) {
+    logger.error(`データベーススキーマの更新中にエラーが発生しました: ${error}`);
+    throw error;
+  }
+}
+
+/**
+ * 新しいNotionデータベースを作成する関数
+ * @param parentPageId 親ページのID
+ * @param databaseName データベースの名前
+ */
+export async function createMeetingsDatabase(parentPageId: string, databaseName: string = 'デジトル面談履歴テスト開発') {
+  try {
+    logger.info(`新しい会議データベースを作成します: ${databaseName}`);
+
+    const response = await notionClient.databases.create({
+      parent: {
+        page_id: parentPageId,
+        type: 'page_id'
+      },
+      title: [
+        {
+          type: 'text',
+          text: {
+            content: databaseName
+          }
+        }
+      ],
+      properties: {
+        // タイトル型のプロパティ
+        "会議名": {
+          title: {}
+        },
+        // テキスト型のプロパティ
+        "日時": {
+          rich_text: {}
+        },
+        "クライアント名": {
+          rich_text: {}
+        },
+        "コンサルタント名": {
+          rich_text: {}
+        },
+        "会議の基本情報": {
+          rich_text: {}
+        },
+        "会議の目的とアジェンダ": {
+          rich_text: {}
+        },
+        "会議の内容": {
+          rich_text: {}
+        },
+        "今後のスケジュール": {
+          rich_text: {}
+        },
+        "共有情報・添付": {
+          rich_text: {}
+        },
+        "その他特記事項": {
+          rich_text: {}
+        },
+        "ジョブID": {
+          rich_text: {}
+        }
+      }
+    });
+
+    logger.info(`新しいデータベースが作成されました: ${response.id}`);
+    return response;
+  } catch (error) {
+    logger.error(`データベース作成中にエラーが発生しました: ${error}`);
+    throw error;
+  }
+}
+
+================
+File: app/lib/notion/types.ts
+================
+/**
+ * 会議レコードの入力データ型
+ */
+export interface MeetingInput {
+  // 基本情報
+  jobId: string;
+  title: string;
+  date: string;
+  transcript: string;
+  summary: string;
+  
+  // 詳細情報
+  participants: string[];
+  decisions: string[];
+  tasks: MeetingTask[];
+  
+  // メタデータ
+  metadata?: {
+    channel?: string;
+    ts?: string;
+    thread_ts?: string;
+    videoUrl?: string;
+    audioUrl?: string;
+    [key: string]: any;
+  };
+}
+
+/**
+ * 会議で決定されたタスク
+ */
+export interface MeetingTask {
+  task: string;
+  assignee?: string;
+  deadline?: string;
+}
+
+/**
+ * 会議レコードの出力データ型（Notionに保存後）
+ */
+export interface MeetingRecord {
+  id: string;
+  url: string;
+  title: string;
+  date: string;
+  summary: string;
+}
+
+/**
+ * Notionプロパティタイプのヘルパー型
+ */
+export type NotionPropertyValue = {
+  title?: { text: { content: string } }[];
+  rich_text?: { text: { content: string } }[];
+  date?: { start: string };
+  multi_select?: { name: string }[];
+  url?: string;
+};
+
+/**
+ * Notion API テキスト型定義
+ */
+export type NotionText = {
+  type: "text";
+  text: {
+    content: string;
+    link?: { url: string } | null;
+  };
+  annotations?: {
+    bold?: boolean;
+    italic?: boolean;
+    strikethrough?: boolean;
+    underline?: boolean;
+    code?: boolean;
+    color?: string;
+  };
+  plain_text?: string;
+  href?: string | null;
+};
+
+/**
+ * Notion API リッチテキスト型定義
+ */
+export type NotionRichText = NotionText[];
+
+/**
+ * Notion APIブロック型定義
+ */
+export type NotionBlock = {
+  object: "block";
+  type: string;
+  [key: string]: any;
+};
+
+/**
+ * Notion API 段落ブロック型定義
+ */
+export type NotionParagraphBlock = {
+  object: "block";
+  type: "paragraph";
+  paragraph: {
+    rich_text: NotionRichText;
+    color?: string;
+  };
+};
+
+/**
+ * Notion API 見出し1ブロック型定義
+ */
+export type NotionHeading1Block = {
+  object: "block";
+  type: "heading_1";
+  heading_1: {
+    rich_text: NotionRichText;
+    color?: string;
+    is_toggleable?: boolean;
+  };
+};
+
+/**
+ * Notion API 見出し2ブロック型定義
+ */
+export type NotionHeading2Block = {
+  object: "block";
+  type: "heading_2";
+  heading_2: {
+    rich_text: NotionRichText;
+    color?: string;
+    is_toggleable?: boolean;
+  };
+};
+
+/**
+ * Notion API 見出し3ブロック型定義
+ */
+export type NotionHeading3Block = {
+  object: "block";
+  type: "heading_3";
+  heading_3: {
+    rich_text: NotionRichText;
+    color?: string;
+    is_toggleable?: boolean;
+  };
+};
+
+/**
+ * Notion API 見出しブロック型定義の統合型
+ */
+export type NotionHeadingBlock = NotionHeading1Block | NotionHeading2Block | NotionHeading3Block;
+
+/**
+ * Notion API コードブロック型定義
+ */
+export type NotionCodeBlock = {
+  object: "block";
+  type: "code";
+  code: {
+    rich_text: NotionRichText;
+    language: string;
+    caption?: NotionRichText;
+  };
+};
+
+================
+File: app/lib/utils/fetch-utils.ts
+================
+import { logger } from '@app/lib/utils/logger';
+
+/**
+ * GCSからJSONデータを取得する汎用関数
+ */
+export async function fetchJsonFromUrl(url: string) {
+  try {
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      logger.error(`Failed to fetch data from ${url}: ${response.statusText}`);
+      return null;
+    }
+    
+    return await response.json();
+  } catch (error) {
+    logger.error(`Error fetching data from ${url}: ${error}`);
+    return null;
+  }
+}
+
+/**
+ * Cloud Storageから文字起こしデータを取得する
+ */
+export async function fetchTranscriptData(url: string) {
+  try {
+    // Public URLからJSONデータを取得
+    const data = await fetchJsonFromUrl(url);
+    
+    if (!data || !data.transcript) {
+      logger.error(`Invalid transcript data from ${url}`);
+      return null;
+    }
+    
+    return data;
+  } catch (error) {
+    logger.error(`Error fetching transcript data: ${error}`);
+    return null;
+  }
+}
+
+================
+File: app/lib/utils/logger.ts
+================
+/**
+ * シンプルなロガーユーティリティ
+ */
+export const logger = {
+  info: (message: string) => {
+    console.log(`[INFO] ${new Date().toISOString()}: ${message}`);
+  },
+  
+  warn: (message: string) => {
+    console.warn(`[WARN] ${new Date().toISOString()}: ${message}`);
+  },
+  
+  error: (message: string | Error) => {
+    const errorMessage = message instanceof Error ? message.stack || message.message : message;
+    console.error(`[ERROR] ${new Date().toISOString()}: ${errorMessage}`);
+  },
+  
+  debug: (message: string, data?: any) => {
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug(`[DEBUG] ${new Date().toISOString()}: ${message}`);
+      if (data) {
+        console.debug(data);
+      }
+    }
+  }
+};
+
+================
+File: app/page.module.css
+================
+.page {
+  --gray-rgb: 0, 0, 0;
+  --gray-alpha-200: rgba(var(--gray-rgb), 0.08);
+  --gray-alpha-100: rgba(var(--gray-rgb), 0.05);
+
+  --button-primary-hover: #383838;
+  --button-secondary-hover: #f2f2f2;
+
+  display: grid;
+  grid-template-rows: 20px 1fr 20px;
+  align-items: center;
+  justify-items: center;
+  min-height: 100svh;
+  padding: 80px;
+  gap: 64px;
+  font-family: var(--font-geist-sans);
+}
+
+@media (prefers-color-scheme: dark) {
+  .page {
+    --gray-rgb: 255, 255, 255;
+    --gray-alpha-200: rgba(var(--gray-rgb), 0.145);
+    --gray-alpha-100: rgba(var(--gray-rgb), 0.06);
+
+    --button-primary-hover: #ccc;
+    --button-secondary-hover: #1a1a1a;
+  }
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  grid-row-start: 2;
+}
+
+.main ol {
+  font-family: var(--font-geist-mono);
+  padding-left: 0;
+  margin: 0;
+  font-size: 14px;
+  line-height: 24px;
+  letter-spacing: -0.01em;
+  list-style-position: inside;
+}
+
+.main li:not(:last-of-type) {
+  margin-bottom: 8px;
+}
+
+.main code {
+  font-family: inherit;
+  background: var(--gray-alpha-100);
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.ctas {
+  display: flex;
+  gap: 16px;
+}
+
+.ctas a {
+  appearance: none;
+  border-radius: 128px;
+  height: 48px;
+  padding: 0 20px;
+  border: none;
+  border: 1px solid transparent;
+  transition:
+    background 0.2s,
+    color 0.2s,
+    border-color 0.2s;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+a.primary {
+  background: var(--foreground);
+  color: var(--background);
+  gap: 8px;
+}
+
+a.secondary {
+  border-color: var(--gray-alpha-200);
+  min-width: 158px;
+}
+
+.footer {
+  grid-row-start: 3;
+  display: flex;
+  gap: 24px;
+}
+
+.footer a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.footer img {
+  flex-shrink: 0;
+}
+
+/* Enable hover only on non-touch devices */
+@media (hover: hover) and (pointer: fine) {
+  a.primary:hover {
+    background: var(--button-primary-hover);
+    border-color: transparent;
+  }
+
+  a.secondary:hover {
+    background: var(--button-secondary-hover);
+    border-color: transparent;
+  }
+
+  .footer a:hover {
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+}
+
+@media (max-width: 600px) {
+  .page {
+    padding: 32px;
+    padding-bottom: 80px;
+  }
+
+  .main {
+    align-items: center;
+  }
+
+  .main ol {
+    text-align: center;
+  }
+
+  .ctas {
+    flex-direction: column;
+  }
+
+  .ctas a {
+    font-size: 14px;
+    height: 40px;
+    padding: 0 16px;
+  }
+
+  a.secondary {
+    min-width: auto;
+  }
+
+  .footer {
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .logo {
+    filter: invert();
+  }
+}
+
+================
+File: app/page.tsx
+================
+import Image from "next/image";
+import styles from "./page.module.css";
+
+export default function Home() {
+  return (
+    <div className={styles.page}>
+      <main className={styles.main}>
+        <Image
+          className={styles.logo}
+          src="/next.svg"
+          alt="Next.js logo"
+          width={180}
+          height={38}
+          priority
+        />
+        <ol>
+          <li>
+            Get started by editing <code>app/page.tsx</code>.
+          </li>
+          <li>Save and see your changes instantly.</li>
+        </ol>
+
+        <div className={styles.ctas}>
+          <a
+            className={styles.primary}
+            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <Image
+              className={styles.logo}
+              src="/vercel.svg"
+              alt="Vercel logomark"
+              width={20}
+              height={20}
+            />
+            Deploy now
+          </a>
+          <a
+            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={styles.secondary}
+          >
+            Read our docs
+          </a>
+        </div>
+      </main>
+      <footer className={styles.footer}>
+        <a
+          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Image
+            aria-hidden
+            src="/file.svg"
+            alt="File icon"
+            width={16}
+            height={16}
+          />
+          Learn
+        </a>
+        <a
+          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Image
+            aria-hidden
+            src="/window.svg"
+            alt="Window icon"
+            width={16}
+            height={16}
+          />
+          Examples
+        </a>
+        <a
+          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Image
+            aria-hidden
+            src="/globe.svg"
+            alt="Globe icon"
+            width={16}
+            height={16}
+          />
+          Go to nextjs.org →
+        </a>
+      </footer>
+    </div>
+  );
+}
+
+================
+File: cloudrun/Dockerfile
+================
+FROM node:18-slim
+
+# 必要なパッケージのインストール
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    python3 \
+    python3-pip \
+    curl \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Google Cloud SDK のインストール
+RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add - && \
+    apt-get update -y && apt-get install google-cloud-sdk -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# アプリケーションのディレクトリ作成
+WORKDIR /app
+
+# 依存関係ファイルのコピー
+COPY package*.json ./
+
+# 依存関係のインストール
+RUN npm install
+
+# アプリケーションコードのコピー
+COPY src/ ./src/
+
+# 実行権限の設定
+RUN chmod +x ./src/process.js
+
+# 環境変数の設定
+ENV NODE_ENV=production
+
+# エントリーポイントの設定
+CMD ["node", "./src/process.js"]
+
+================
+File: public/file.svg
+================
+<svg fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 13.5V5.41a1 1 0 0 0-.3-.7L9.8.29A1 1 0 0 0 9.08 0H1.5v13.5A2.5 2.5 0 0 0 4 16h8a2.5 2.5 0 0 0 2.5-2.5m-1.5 0v-7H8v-5H3v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1M9.5 5V2.12L12.38 5zM5.13 5h-.62v1.25h2.12V5zm-.62 3h7.12v1.25H4.5zm.62 3h-.62v1.25h7.12V11z" clip-rule="evenodd" fill="#666" fill-rule="evenodd"/></svg>
+
+================
+File: public/globe.svg
+================
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g clip-path="url(#a)"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.27 14.1a6.5 6.5 0 0 0 3.67-3.45q-1.24.21-2.7.34-.31 1.83-.97 3.1M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m.48-1.52a7 7 0 0 1-.96 0H7.5a4 4 0 0 1-.84-1.32q-.38-.89-.63-2.08a40 40 0 0 0 3.92 0q-.25 1.2-.63 2.08a4 4 0 0 1-.84 1.31zm2.94-4.76q1.66-.15 2.95-.43a7 7 0 0 0 0-2.58q-1.3-.27-2.95-.43a18 18 0 0 1 0 3.44m-1.27-3.54a17 17 0 0 1 0 3.64 39 39 0 0 1-4.3 0 17 17 0 0 1 0-3.64 39 39 0 0 1 4.3 0m1.1-1.17q1.45.13 2.69.34a6.5 6.5 0 0 0-3.67-3.44q.65 1.26.98 3.1M8.48 1.5l.01.02q.41.37.84 1.31.38.89.63 2.08a40 40 0 0 0-3.92 0q.25-1.2.63-2.08a4 4 0 0 1 .85-1.32 7 7 0 0 1 .96 0m-2.75.4a6.5 6.5 0 0 0-3.67 3.44 29 29 0 0 1 2.7-.34q.31-1.83.97-3.1M4.58 6.28q-1.66.16-2.95.43a7 7 0 0 0 0 2.58q1.3.27 2.95.43a18 18 0 0 1 0-3.44m.17 4.71q-1.45-.12-2.69-.34a6.5 6.5 0 0 0 3.67 3.44q-.65-1.27-.98-3.1" fill="#666"/></g><defs><clipPath id="a"><path fill="#fff" d="M0 0h16v16H0z"/></clipPath></defs></svg>
+
+================
+File: public/next.svg
+================
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 394 80"><path fill="#000" d="M262 0h68.5v12.7h-27.2v66.6h-13.6V12.7H262V0ZM149 0v12.7H94v20.4h44.3v12.6H94v21h55v12.6H80.5V0h68.7zm34.3 0h-17.8l63.8 79.4h17.9l-32-39.7 32-39.6h-17.9l-23 28.6-23-28.6zm18.3 56.7-9-11-27.1 33.7h17.8l18.3-22.7z"/><path fill="#000" d="M81 79.3 17 0H0v79.3h13.6V17l50.2 62.3H81Zm252.6-.4c-1 0-1.8-.4-2.5-1s-1.1-1.6-1.1-2.6.3-1.8 1-2.5 1.6-1 2.6-1 1.8.3 2.5 1a3.4 3.4 0 0 1 .6 4.3 3.7 3.7 0 0 1-3 1.8zm23.2-33.5h6v23.3c0 2.1-.4 4-1.3 5.5a9.1 9.1 0 0 1-3.8 3.5c-1.6.8-3.5 1.3-5.7 1.3-2 0-3.7-.4-5.3-1s-2.8-1.8-3.7-3.2c-.9-1.3-1.4-3-1.4-5h6c.1.8.3 1.6.7 2.2s1 1.2 1.6 1.5c.7.4 1.5.5 2.4.5 1 0 1.8-.2 2.4-.6a4 4 0 0 0 1.6-1.8c.3-.8.5-1.8.5-3V45.5zm30.9 9.1a4.4 4.4 0 0 0-2-3.3 7.5 7.5 0 0 0-4.3-1.1c-1.3 0-2.4.2-3.3.5-.9.4-1.6 1-2 1.6a3.5 3.5 0 0 0-.3 4c.3.5.7.9 1.3 1.2l1.8 1 2 .5 3.2.8c1.3.3 2.5.7 3.7 1.2a13 13 0 0 1 3.2 1.8 8.1 8.1 0 0 1 3 6.5c0 2-.5 3.7-1.5 5.1a10 10 0 0 1-4.4 3.5c-1.8.8-4.1 1.2-6.8 1.2-2.6 0-4.9-.4-6.8-1.2-2-.8-3.4-2-4.5-3.5a10 10 0 0 1-1.7-5.6h6a5 5 0 0 0 3.5 4.6c1 .4 2.2.6 3.4.6 1.3 0 2.5-.2 3.5-.6 1-.4 1.8-1 2.4-1.7a4 4 0 0 0 .8-2.4c0-.9-.2-1.6-.7-2.2a11 11 0 0 0-2.1-1.4l-3.2-1-3.8-1c-2.8-.7-5-1.7-6.6-3.2a7.2 7.2 0 0 1-2.4-5.7 8 8 0 0 1 1.7-5 10 10 0 0 1 4.3-3.5c2-.8 4-1.2 6.4-1.2 2.3 0 4.4.4 6.2 1.2 1.8.8 3.2 2 4.3 3.4 1 1.4 1.5 3 1.5 5h-5.8z"/></svg>
+
+================
+File: public/vercel.svg
+================
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1155 1000"><path d="m577.3 0 577.4 1000H0z" fill="#fff"/></svg>
+
+================
+File: public/window.svg
+================
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
+
+================
+File: scripts/tsconfig/tsconfig.json
+================
+{
+  "compilerOptions": {
+    "target": "ES2018",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "lib": ["ES2018", "DOM"],
+    "outDir": "../../dist/scripts",
+    "rootDir": "..",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true
+  },
+  "include": ["../**/*.ts"],
+  "exclude": ["node_modules"]
+}
+
+================
+File: app/api/cloudrun/callback/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import { Client } from '@notionhq/client';
+import { CONFIG } from '@app/lib/config';
+import { CloudRunCallback } from '@app/lib/types';
+import { sendSlackMessage } from '@app/lib/utils';
+
+// Notionクライアント初期化
+const notion = new Client({
+  auth: CONFIG.NOTION_API_KEY,
+});
+
+// Cloud Runからのコールバック処理エンドポイント
+export async function POST(req: NextRequest) {
+  console.log('Received CloudRun callback');
+  
+  try {
+    // リクエストボディの検証
+    if (!req.body) {
+      console.error('Empty request body');
+      return NextResponse.json(
+        { error: 'Empty request body' },
+        { status: 400 }
+      );
+    }
+    
+    const callback = await req.json() as CloudRunCallback;
+    console.log('Callback payload:', JSON.stringify(callback));
+    
+    const { jobId, status, transcriptUrl, error } = callback;
+    
+    if (!jobId) {
+      console.error('Missing jobId in callback');
+      return NextResponse.json(
+        { error: 'Missing jobId in callback' },
+        { status: 400 }
+      );
+    }
+    
+    // 処理失敗の場合
+    if (status === 'failure') {
+      console.error(`Job ${jobId} failed with error: ${error}`);
+      
+      // Slackに失敗通知を送信
+      try {
+        if (callback.metadata?.channel) {
+          await sendSlackMessage(
+            callback.metadata.channel,
+            `音声/動画処理中にエラーが発生しました: ${error || '不明なエラー'}`,
+            callback.metadata.thread_ts || callback.metadata.ts
+          );
+        }
+      } catch (slackError) {
+        console.error('Failed to send error notification to Slack:', slackError);
+      }
+      
+      return NextResponse.json({ 
+        received: true, 
+        status: 'error_logged',
+        jobId 
+      });
+    }
+    
+    // 処理成功の場合
+    if (!transcriptUrl) {
+      return NextResponse.json(
+        { error: 'No transcript URL provided' },
+        { status: 400 }
+      );
+    }
+    
+    try {
+      // 文字起こし結果を取得（Cloud Storageから）
+      console.log(`Fetching transcript from: ${transcriptUrl}`);
+      const response = await fetch(transcriptUrl);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch transcript: ${response.status} ${response.statusText}`);
+      }
+      
+      const transcriptData = await response.json();
+      console.log(`Transcript data received: ${transcriptData.transcript.length} characters`);
+      
+      // Geminiで要約処理
+      console.log('Starting summarization with Gemini');
+      const summaryResponse = await fetch(new URL('/api/gemini/summarize', process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          jobId,
+          transcript: transcriptData.transcript,
+          metadata: transcriptData.metadata || {}
+        }),
+      });
+      
+      if (!summaryResponse.ok) {
+        throw new Error(`Summarization failed: ${summaryResponse.status} ${summaryResponse.statusText}`);
+      }
+      
+      const summaryData = await summaryResponse.json();
+      console.log('Summarization completed successfully');
+      
+      // Notionに議事録ページを作成
+      console.log('Creating Notion page');
+      const notionPage = await createNotionPage(
+        summaryData.summary,
+        transcriptUrl,
+        transcriptData.metadata
+      );
+      console.log(`Notion page created: ${notionPage.url}`);
+      
+      // Slackに完了通知
+      if (transcriptData.metadata?.channel && (transcriptData.metadata.thread_ts || transcriptData.metadata.ts)) {
+        try {
+          await sendSlackMessage(
+            transcriptData.metadata.channel,
+            `✅ 音声/動画からの議事録が完成しました！\n📝 <${notionPage.url}|Notionで見る>`,
+            transcriptData.metadata.thread_ts || transcriptData.metadata.ts
+          );
+          console.log('Slack notification sent');
+        } catch (slackError) {
+          console.error('Failed to send Slack notification:', slackError);
+        }
+      }
+      
+      return NextResponse.json({
+        success: true,
+        jobId,
+        notionPageId: notionPage.id,
+        notionPageUrl: notionPage.url
+      });
+    } catch (error) {
+      console.error('Error processing transcript:', error);
+      
+      // エラー通知をSlackに送信
+      try {
+        if (callback.metadata?.channel) {
+          await sendSlackMessage(
+            callback.metadata.channel,
+            `処理中にエラーが発生しました: ${(error as Error).message}`,
+            callback.metadata.thread_ts || callback.metadata.ts
+          );
+        }
+      } catch (slackError) {
+        console.error('Failed to send error notification to Slack:', slackError);
+      }
+      
+      return NextResponse.json(
+        { 
+          error: `Processing failed: ${(error as Error).message}`,
+          jobId
+        },
+        { status: 500 }
+      );
+    }
+  } catch (error) {
+    console.error('Invalid callback payload:', error);
+    return NextResponse.json(
+      { error: `Invalid callback payload: ${(error as Error).message}` },
+      { status: 400 }
+    );
+  }
+}
+
+// Notionページを作成する関数
+async function createNotionPage(summary: any, transcriptUrl: string, metadata: any = {}) {
+  try {
+    const { meetingName, basicInfo, purpose, content, schedule, resources, notes } = summary;
+    
+    // Notionページプロパティ
+    const pageProperties: any = {
+      '会議名': {
+        title: [
+          {
+            text: {
+              content: meetingName || '会議議事録',
+            },
+          },
+        ],
+      },
+      '会議の基本情報': {
+        rich_text: [
+          {
+            text: {
+              content: basicInfo || '',
+            },
+          },
+        ],
+      },
+      '会議の目的とアジェンダ': {
+        rich_text: [
+          {
+            text: {
+              content: purpose || '',
+            },
+          },
+        ],
+      },
+      '会議の内容（議論と決定事項）': {
+        rich_text: [
+          {
+            text: {
+              content: content || '',
+            },
+          },
+        ],
+      },
+      '今後のスケジュールとタスク管理': {
+        rich_text: [
+          {
+            text: {
+              content: schedule || '',
+            },
+          },
+        ],
+      },
+      '共有情報・添付資料': {
+        rich_text: [
+          {
+            text: {
+              content: resources || '',
+            },
+          },
+        ],
+      },
+      'その他特記事項': {
+        rich_text: [
+          {
+            text: {
+              content: notes || '',
+            },
+          },
+        ],
+      },
+      'Transcript_URL': {
+        url: transcriptUrl || null,
+      },
+    };
+    
+    // Video_URLが存在する場合は追加
+    if (metadata.videoUrl) {
+      pageProperties['Video_URL'] = {
+        url: metadata.videoUrl,
+      };
+    }
+    
+    // NotionのDBにページを作成
+    const response = await notion.pages.create({
+      parent: {
+        database_id: CONFIG.NOTION_DATABASE_ID,
+      },
+      properties: pageProperties,
+    });
+    
+    return {
+      id: response.id,
+      url: (response as any).url || '',
+      title: meetingName || '会議議事録',
+    };
+  } catch (error) {
+    console.error('Error creating Notion page:', error);
+    throw error;
+  }
+}
+
+================
+File: app/api/slack/text-handler/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import { v4 as uuidv4 } from 'uuid';
+import { CONFIG } from '@/app/lib/config';
+import { SlackEventPayload, ProcessingJob } from '@/app/lib/types';
+import { sendSlackMessage, extractDateFromText, extractNamesFromText } from '@/app/lib/utils';
+
+// テキスト処理エンドポイント
+export async function POST(req: NextRequest) {
+  try {
+    console.log('text-handler: Received request');
+    const payload = await req.json() as SlackEventPayload;
+    const { event } = payload;
+    
+    // テキスト内容チェック
+    if (!event.text || event.text.trim() === '') {
+      console.log('text-handler: No text content');
+      return NextResponse.json({ error: 'No text content' }, { status: 400 });
+    }
+    
+    console.log('text-handler: Processing text message:', event.text);
+    
+    // テキスト内容から日付やクライアント情報などを抽出
+    const dateStr = extractDateFromText(event.text);
+    const { client, consultant } = extractNamesFromText(event.text);
+    
+    console.log('text-handler: Extracted metadata:', { dateStr, client, consultant });
+    
+    // テキストのみの場合はGeminiで要約や分析が可能
+    // テキストのみの場合は簡単な応答メッセージを送信
+    await sendSlackMessage(
+      event.channel,
+      `📝 メッセージを受け取りました。\n抽出情報: ${dateStr ? `日付: ${dateStr}、` : ''}${client ? `クライアント: ${client}、` : ''}${consultant ? `コンサルタント: ${consultant}` : ''}`,
+      event.thread_ts || event.ts
+    );
+    
+    // 必要に応じてテキスト処理ジョブを作成
+    const jobId = uuidv4();
+    const job: ProcessingJob = {
+      id: jobId,
+      text: event.text,
+      channel: event.channel,
+      ts: event.ts,
+      thread_ts: event.thread_ts,
+      user: event.user,
+      status: 'completed', // テキストのみなので即時完了
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    console.log('text-handler: Completed text processing job:', jobId);
+    
+    return NextResponse.json({ 
+      jobId, 
+      success: true,
+      metadata: {
+        date: dateStr,
+        client,
+        consultant
+      }
+    });
+  } catch (error) {
+    console.error('text-handler: Error processing text:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+================
+File: app/globals.css
+================
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code, pre {
+  font-family: var(--font-mono), monospace;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  html {
+    color-scheme: dark;
+  }
+}
+
+================
+File: app/layout.tsx
+================
+import type { Metadata } from "next";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "Dagitoru - Slack会議録自動記録システム",
+  description: "SlackのビデオやオーディオをNotion議事録に自動変換するアプリケーション",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="ja">
+      <body className={`${GeistSans.className} ${GeistMono.className}`}>
+        {children}
+      </body>
+    </html>
+  );
+}
+
+================
+File: app/lib/types.ts
+================
+// Slack Event Types
+export interface SlackEventPayload {
+  token: string;
+  team_id: string;
+  api_app_id: string;
+  event: SlackEvent;
+  type: string;
+  event_id: string;
+  event_time: number;
+}
+
+export interface SlackEvent {
+  type: string;
+  user: string;
+  text?: string;
+  ts: string;
+  channel: string;
+  event_ts: string;
+  thread_ts?: string;
+  files?: SlackFile[];
+  file_id?: string;
+  bot_id?: string;
+}
+
+export interface SlackFile {
+  id: string;
+  name: string;
+  mimetype: string;
+  filetype: string;
+  url_private: string;
+  size: number;
+  user: string;
+  permalink: string;
+  is_public: boolean;
+}
+
+// Job Types
+export interface ProcessingJob {
+  id: string;
+  fileIds?: string[];
+  text?: string;
+  channel: string;
+  ts: string;
+  thread_ts?: string;
+  user: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Cloud Run Callback Types
+export interface CloudRunCallback {
+  jobId: string;
+  status: 'success' | 'failure';
+  transcriptUrl?: string;
+  error?: string;
+  metadata?: {
+    channel?: string;
+    ts?: string;
+    thread_ts?: string;
+    videoUrl?: string;
+    audioUrl?: string;
+    [key: string]: any;
+  };
+}
+
+// Notion Types
+export interface NotionPage {
+  id: string;
+  url: string;
+  title: string;
+}
+
+================
+File: cloudrun/package.json
+================
+{
+  "name": "dagitoru-cloud-run",
+  "version": "1.0.0",
+  "description": "動画処理と文字起こしを行うCloud Run Job",
+  "main": "src/process.js",
+  "scripts": {
+    "start": "node src/process.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@google-cloud/pubsub": "^3.7.1",
+    "@google-cloud/speech": "^6.0.1",
+    "@google-cloud/storage": "^7.1.0",
+    "axios": "^1.5.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "fluent-ffmpeg": "^2.1.2",
+    "node-fetch": "^3.3.2",
+    "uuid": "^9.0.0"
+  }
+}
+
+================
+File: scripts/setup-notion-db.ts
+================
+/**
+ * Notionデータベースのスキーマを設定するコマンドラインスクリプト
+ * 
+ * 使用方法:
+ * 1. 既存のデータベースのスキーマを更新する場合:
+ *    npx ts-node scripts/setup-notion-db.ts update
+ * 
+ * 2. 新しいデータベースを作成する場合:
+ *    npx ts-node scripts/setup-notion-db.ts create <親ページID> [データベース名]
+ */
+
+// CommonJSスタイルでモジュールをインポート
+const axios = require('axios');
+const dotenv = require('dotenv');
+// Nodeの型定義は@types/nodeパッケージから提供される
+
+// 環境変数の読み込み
+dotenv.config();
+
+const API_URL = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+const NOTION_API_KEY = process.env.NOTION_API_KEY;
+
+if (!NOTION_API_KEY) {
+  console.error('エラー: NOTION_API_KEYが設定されていません。.envファイルを確認してください。');
+  process.exit(1);
+}
+
+// コマンドライン引数の解析
+const command = process.argv[2];
+const parentPageId = process.argv[3];
+const databaseName = process.argv[4];
+
+// 共通のヘッダー
+const headers = {
+  'Content-Type': 'application/json'
+};
+
+/**
+ * 既存のデータベースのスキーマを更新する関数
+ */
+async function updateDatabaseSchema() {
+  try {
+    console.log('既存のNotionデータベースのスキーマを更新しています...');
+    
+    const response = await axios.post(
+      `${API_URL}/api/notion/setup-db`,
+      {},
+      { headers }
+    );
+    
+    console.log('結果:', response.data);
+    console.log('スキーマ更新が完了しました！');
+  } catch (error: any) {
+    console.error('エラー:', error.response?.data || error.message);
+  }
+}
+
+/**
+ * 新しいデータベースを作成する関数
+ */
+async function createNewDatabase(parentPageId: string, dbName?: string) {
+  try {
+    if (!parentPageId) {
+      console.error('エラー: 親ページIDが必要です');
+      console.log('使用方法: npx ts-node scripts/setup-notion-db.ts create <親ページID> [データベース名]');
+      process.exit(1);
+    }
+    
+    console.log('新しいNotionデータベースを作成しています...');
+    
+    const response = await axios.post(
+      `${API_URL}/api/notion/create-db`,
+      {
+        parentPageId,
+        databaseName: dbName
+      },
+      { headers }
+    );
+    
+    console.log('結果:', response.data);
+    console.log('データベース作成が完了しました！');
+    console.log('データベースID:', response.data.database_id);
+    
+    if (response.data.database_url) {
+      console.log('データベースURL:', response.data.database_url);
+    }
+    
+    // 環境変数にセットするように指示
+    console.log('\n次のステップ:');
+    console.log('1. .envファイルに以下を追加してください:');
+    console.log(`NOTION_MEETINGS_DB_ID=${response.data.database_id}`);
+  } catch (error: any) {
+    console.error('エラー:', error.response?.data || error.message);
+  }
+}
+
+// コマンドの実行
+switch (command) {
+  case 'update':
+    updateDatabaseSchema();
+    break;
+  case 'create':
+    createNewDatabase(parentPageId, databaseName);
+    break;
+  default:
+    console.log('使用方法:');
+    console.log('1. 既存のデータベースのスキーマを更新する場合:');
+    console.log('   npx ts-node scripts/setup-notion-db.ts update');
+    console.log('2. 新しいデータベースを作成する場合:');
+    console.log('   npx ts-node scripts/setup-notion-db.ts create <親ページID> [データベース名]');
+    break;
+}
+
+================
+File: tsconfig.json
+================
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"],
+      "@app/*": ["./app/*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+
+================
+File: app/lib/config.ts
+================
+// アプリ設定
+export const CONFIG = {
+  // Slack設定
+    SLACK_TOKEN: process.env.SLACK_TOKEN || '',
+  SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET || '',
+  
+  // Google Cloud設定
+  GCP_PROJECT_ID: process.env.GCP_PROJECT_ID || '',
+  GCS_BUCKET_NAME: process.env.GCS_BUCKET_NAME || '',
+  PUBSUB_TOPIC: process.env.PUBSUB_TOPIC || '',
+  
+  // Notion設定
+  NOTION_API_KEY: process.env.NOTION_API_KEY || '',
+  NOTION_DATABASE_ID: process.env.NOTION_DATABASE_ID || '',
+  
+  // Cloud Run設定
+  CLOUD_RUN_JOB_SERVICE: process.env.CLOUD_RUN_JOB_SERVICE || '',
+  
+  // 一般設定
+  MAX_FILE_SIZE: 1.5 * 1024 * 1024 * 1024, // 1.5GB
+  PROCESSING_TIMEOUT: 30 * 60 * 1000, // 30分
+};
+
+// GCSのパス生成関数
+export function getGCSPath(jobId: string, filename: string): string {
+  const date = new Date();
+  const formattedDate = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}_${String(date.getHours()).padStart(2, '0')}${String(date.getMinutes()).padStart(2, '0')}`;
+  return `meetings/${formattedDate}/${jobId}/${filename}`;
+}
+
+================
+File: app/lib/kv-store.ts
+================
+// メモリ内キャッシュ用のマップ
+const memoryStore = new Map<string, number>();
+
+/**
+ * 処理済みイベントを管理するためのクラス
+ * メモリ内キャッシュを使って重複を防止します
+ */
+export class EventProcessor {
+  // メモリキャッシュの有効期限（ミリ秒）
+  private readonly MEMORY_EXPIRY_MS = 3600000; // 1時間
+  
+  /**
+   * メモリ内キャッシュをクリーンアップ
+   */
+  private cleanupMemoryStore(): void {
+    const now = Date.now();
+    for (const [key, timestamp] of memoryStore.entries()) {
+      if (now - timestamp > this.MEMORY_EXPIRY_MS) {
+        memoryStore.delete(key);
+      }
+    }
+  }
+  
+  /**
+   * イベントが既に処理済みかどうかを確認し、未処理の場合は処理済みとしてマーク
+   * @param eventHash 処理対象イベントのハッシュ値
+   * @returns 処理済みの場合はtrue、未処理だった場合はfalse
+   */
+  async isProcessedOrMark(eventHash: string): Promise<boolean> {
+    try {
+      // キャッシュのクリーンアップ
+      this.cleanupMemoryStore();
+      
+      // メモリ内キャッシュをチェック
+      const key = `event:${eventHash}`;
+      if (memoryStore.has(key)) {
+        console.log(`メモリで重複イベント検出: ${eventHash}`);
+        return true;
+      }
+      
+      // 未処理の場合は記録
+      memoryStore.set(key, Date.now());
+      console.log(`メモリにイベント記録: ${eventHash}`);
+      return false;
+    } catch (error) {
+      console.error('重複チェックエラー:', error);
+      // エラー時は安全策として未処理として扱う
+      return false;
+    }
+  }
+  
+  /**
+   * メッセージが既に送信済みかどうかを確認し、未送信の場合は送信済みとしてマーク
+   * @param messageKey メッセージの一意キー
+   * @returns 送信済みの場合はtrue、未送信だった場合はfalse
+   */
+  async isMessageSentOrMark(messageKey: string): Promise<boolean> {
+    try {
+      // キャッシュのクリーンアップ
+      this.cleanupMemoryStore();
+      
+      // メモリ内キャッシュをチェック
+      const key = `message:${messageKey}`;
+      if (memoryStore.has(key)) {
+        console.log(`メモリで重複メッセージ検出: ${messageKey}`);
+        return true;
+      }
+      
+      // 未送信の場合は記録
+      memoryStore.set(key, Date.now());
+      console.log(`メモリにメッセージ記録: ${messageKey}`);
+      return false;
+    } catch (error) {
+      console.error('メッセージ重複チェックエラー:', error);
+      // エラー時は安全策として未送信として扱う
+      return false;
+    }
+  }
+  
+  /**
+   * メモリ内キャッシュをクリア（テスト用）
+   */
+  async clearAllEvents(): Promise<void> {
+    try {
+      memoryStore.clear();
+      console.log('メモリ内キャッシュをクリアしました');
+    } catch (error) {
+      console.error('キャッシュクリアエラー:', error);
+    }
+  }
+}
+
+================
+File: next-env.d.ts
+================
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/basic-features/typescript for more information.
+
+================
+File: app/api/slack/combined-handler/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import { WebClient } from '@slack/web-api';
+import { v4 as uuidv4 } from 'uuid';
+import { CONFIG } from '@/app/lib/config';
+import { SlackEventPayload, ProcessingJob, SlackFile } from '@/app/lib/types';
+import { uploadFileToGCS, sendSlackMessage, startCloudRunJob, getFileType, extractDateFromText, extractNamesFromText } from '@/app/lib/utils';
+
+// Slackクライアント初期化
+const slackClient = new WebClient(CONFIG.SLACK_TOKEN);
+
+// 複合コンテンツ（テキスト+ファイル）処理エンドポイント
+export async function POST(req: NextRequest) {
+  try {
+    console.log('combined-handler: Received request');
+    const payload = await req.json() as SlackEventPayload;
+    const { event } = payload;
+    
+    console.log('combined-handler: Processing message with files');
+    
+    // ファイル情報を取得
+    let files: SlackFile[] = [];
+    
+    if (event.files) {
+      files = event.files;
+      console.log(`combined-handler: Found ${files.length} files in the message`);
+    } else {
+      console.log('combined-handler: No files found in the message');
+      return NextResponse.json({ error: 'No files found' }, { status: 400 });
+    }
+    
+    // テキスト内容を取得
+    const messageText = event.text || '';
+    console.log('combined-handler: Message text:', messageText);
+    
+    // テキスト内容から日付やクライアント情報などを抽出
+    const dateStr = extractDateFromText(messageText);
+    const { client, consultant } = extractNamesFromText(messageText);
+    
+    // ジョブID生成
+    const jobId = uuidv4();
+    console.log('combined-handler: Generated job ID:', jobId);
+    
+    // 処理結果を保存する配列
+    const results: {
+      success: string[];
+      error: string[];
+    } = {
+      success: [],
+      error: []
+    };
+    
+    // 各ファイルをGCSにアップロード
+    const filePromises = files.map(async (file) => {
+      // ファイルサイズチェック
+      if (file.size > CONFIG.MAX_FILE_SIZE) {
+        console.log(`combined-handler: File size too large: ${file.name} (${file.size} bytes)`);
+        results.error.push(`${file.name} (サイズ超過: ${Math.round(file.size / 1024 / 1024)}MB)`);
+        return null;
+      }
+      
+      // ファイルタイプの判別
+      const fileType = getFileType(file);
+      console.log(`combined-handler: File type: ${fileType} for file ${file.name}`);
+      
+      // GCSにアップロード
+      console.log(`combined-handler: Uploading file to GCS: ${file.name}`);
+      const uploadResult = await uploadFileToGCS(
+        file.url_private,
+        jobId,
+        file.name
+      );
+      
+      if (!uploadResult.success) {
+        console.error(`combined-handler: Failed to upload file: ${file.name}`, uploadResult.error);
+        results.error.push(`${file.name} (アップロード失敗: ${uploadResult.error})`);
+        return null;
+      }
+      
+      console.log(`combined-handler: File uploaded successfully: ${file.name} -> ${uploadResult.path}`);
+      results.success.push(file.name);
+      return {
+        id: file.id,
+        name: file.name,
+        type: fileType,
+        gcsPath: uploadResult.path,
+        gcsUrl: uploadResult.url
+      };
+    });
+    
+    // すべてのファイルのアップロード結果を待機
+    const fileResults = await Promise.all(filePromises);
+    const validFiles = fileResults.filter(Boolean);
+    
+    if (validFiles.length === 0) {
+      console.error('combined-handler: No valid files were uploaded');
+      
+      // エラーメッセージ（1回だけ送信）
+      try {
+        await sendSlackMessage(
+          event.channel,
+          `❌ ファイル処理に失敗しました:\n${results.error.join('\n')}`,
+          event.thread_ts || event.ts
+        );
+      } catch (error) {
+        console.error('Slack message sending failed:', error);
+      }
+      
+      return NextResponse.json({ error: 'No valid files uploaded' }, { status: 400 });
+    }
+    
+    console.log(`combined-handler: Successfully uploaded ${validFiles.length} files`);
+    
+    // ジョブ作成
+    const job: ProcessingJob = {
+      id: jobId,
+      fileIds: validFiles.map(file => file?.id as string),
+      text: messageText,
+      channel: event.channel,
+      ts: event.ts,
+      thread_ts: event.thread_ts,
+      user: event.user,
+      status: 'pending',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    console.log('combined-handler: Created processing job:', job);
+    
+    // メタデータ情報を追加
+    const metadata = {
+      date: dateStr,
+      client,
+      consultant
+    };
+    
+    // 処理結果のサマリーを作成（1回だけメッセージ送信）
+    let statusMessage = `📝 処理ジョブを作成しました (ID: ${jobId})`;
+    
+    if (results.success.length > 0) {
+      statusMessage += `\n✅ 処理対象ファイル(${results.success.length}件): ${results.success.join(', ')}`;
+    }
+    
+    if (results.error.length > 0) {
+      statusMessage += `\n❌ 処理できなかったファイル(${results.error.length}件): ${results.error.join(', ')}`;
+    }
+    
+    statusMessage += `\n📊 処理が完了するとお知らせします。`;
+    
+    // Slackに最終結果を1回だけ通知
+    try {
+    await sendSlackMessage(
+      event.channel,
+        statusMessage,
+      event.thread_ts || event.ts
+    );
+    } catch (error) {
+      console.error('combined-handler: Failed to send Slack notification:', error);
+    }
+    
+    // Cloud Run Jobを開始
+    console.log('combined-handler: Starting Cloud Run job');
+    await startCloudRunJob(job);
+    
+    return NextResponse.json({ jobId, success: true });
+  } catch (error) {
+    console.error('combined-handler: Error processing combined content:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+================
+File: app/api/slack/test/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+
+// 完全にシンプル化したテストエンドポイント
+export async function GET() {
+  console.log('GET request to /api/slack/test');
+  return new Response('Slack API Test Endpoint');
+}
+
+// 最もシンプルなチャレンジレスポンス
+export async function POST(req: NextRequest) {
+  try {
+    console.log('POST request to /api/slack/test');
+    const rawText = await req.text();
+    console.log('Request body:', rawText);
+    
+    let data;
+    
+    try {
+      data = JSON.parse(rawText);
+    } catch (e) {
+      console.error('Invalid JSON:', e);
+      return new Response('Invalid JSON', { status: 400 });
+    }
+    
+    // URL検証の場合はチャレンジをそのまま返す
+    if (data && data.type === 'url_verification') {
+      console.log('Responding to URL verification challenge:', data.challenge);
+      return new Response(JSON.stringify({ challenge: data.challenge }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // イベントの種類をログに記録
+    if (data && data.type) {
+      console.log('Received event type:', data.type);
+    }
+    
+    // それ以外は単純にOKを返す
+    return new Response(JSON.stringify({ ok: true }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error in /api/slack/test:', error);
+    return new Response('Error', { status: 500 });
+  }
+}
+
+================
+File: .gitignore
+================
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+node_modules/
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+.next/
+/out/
+app/.next/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files
+# .env* コメントアウトして必要に応じて個別に指定
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+# next-env.d.ts コメントアウト
+
+# temp directory
+temp_repo/
+
+================
+File: next.config.js
+================
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  eslint: {
+    ignoreDuringBuilds: true
+  },
+  typescript: {
+    ignoreBuildErrors: true
+  }
+}
+
+module.exports = nextConfig
+
+================
+File: app/lib/utils.ts
+================
+import { WebClient } from '@slack/web-api';
+import { Storage } from '@google-cloud/storage';
+import { PubSub } from '@google-cloud/pubsub';
+import axios from 'axios';
+import { CONFIG, getGCSPath } from './config';
+import { SlackFile, ProcessingJob } from './types';
+import { EventProcessor } from './kv-store';
+
+// イベント処理インスタンスの作成
+const eventProcessor = new EventProcessor();
+
+// Base64でエンコードされたサービスアカウントJSONをデコードする関数
+function getGoogleCredentials() {
+  try {
+    // 環境変数からBase64エンコードされたJSON文字列を取得
+    const credentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    if (!credentialsJson) {
+      console.error('Google credentials not found in environment variables');
+      return null;
+    }
+    
+    // Base64デコード
+    const decodedCredentials = Buffer.from(credentialsJson, 'base64').toString('utf-8');
+    
+    // デコードされたJSONをパース
+    const credentials = JSON.parse(decodedCredentials);
+    
+    // プロジェクトIDの確認
+    if (!credentials.project_id) {
+      console.error('project_id not found in credentials');
+      // 環境変数から取得したプロジェクトIDを追加
+      credentials.project_id = process.env.GCP_PROJECT_ID || '';
+    }
+    
+    return credentials;
+  } catch (error) {
+    console.error('Failed to parse Google credentials:', error);
+    return null;
+  }
+}
+
+// 認証情報の取得
+const googleCredentials = getGoogleCredentials();
+
+// Slackクライアント初期化
+const slackClient = new WebClient(CONFIG.SLACK_TOKEN);
+
+// GCSクライアント初期化
+const storage = new Storage({
+  credentials: googleCredentials,
+  projectId: CONFIG.GCP_PROJECT_ID
+});
+const bucket = storage.bucket(CONFIG.GCS_BUCKET_NAME);
+
+// PubSubクライアント初期化
+const pubsub = new PubSub({
+  credentials: googleCredentials,
+  projectId: CONFIG.GCP_PROJECT_ID
+});
+// デフォルトのトピック名を設定
+const topicName = CONFIG.PUBSUB_TOPIC || 'dagitoru-topic';
+const topic = pubsub.topic(topicName);
+
+/**
+ * Slackにメッセージを送信する関数
+ * Vercel KVを使用して重複送信を防止
+ */
+export async function sendSlackMessage(channel: string, text: string, thread_ts?: string) {
+  try {
+    // 重複防止のためのキーを生成
+    const messageKey = `${channel}_${thread_ts || 'main'}_${text.substring(0, 100)}`;
+    
+    // KVを使用して送信済みかどうかを確認
+    const isSent = await eventProcessor.isMessageSentOrMark(messageKey);
+    
+    // すでに送信済みの場合はスキップ
+    if (isSent) {
+      console.log(`重複メッセージをスキップしました: ${messageKey}`);
+      return true; // 送信成功として扱う
+    }
+    
+    // メッセージを送信
+    await slackClient.chat.postMessage({
+      channel,
+      text,
+      thread_ts
+    });
+    
+    console.log(`メッセージを送信しました: ${messageKey}`);
+    return true;
+  } catch (error) {
+    console.error('Slack message sending failed:', error);
+    return false;
+  }
+}
+
+// ファイルをGCSにアップロードする関数
+export async function uploadFileToGCS(fileUrl: string, jobId: string, filename: string) {
+  try {
+    console.log(`[GCS_UPLOAD] ファイルをSlackからダウンロード開始: ${filename}, URL: ${fileUrl.substring(0, 50)}...`);
+    
+    // Slackからファイルをダウンロード
+    const response = await axios.get(fileUrl, {
+      headers: {
+        Authorization: `Bearer ${CONFIG.SLACK_TOKEN}`,
+      },
+      responseType: 'arraybuffer',
+      // タイムアウト設定を追加（60秒）
+      timeout: 60000
+    });
+    
+    console.log(`[GCS_UPLOAD] ファイルをSlackからダウンロード完了: ${filename}, サイズ: ${response.data.length} バイト`);
+    
+    if (!response.data || response.data.length === 0) {
+      throw new Error('ダウンロードしたファイルが空です');
+    }
+    
+    // GCS保存先パス
+    const gcsPath = getGCSPath(jobId, filename);
+    console.log(`[GCS_UPLOAD] GCSへのアップロード開始: ${gcsPath}`);
+    
+    // バケット名のログ出力
+    console.log(`[GCS_UPLOAD] バケット名: ${CONFIG.GCS_BUCKET_NAME}`);
+    
+    // ファイルオブジェクトを作成
+    const file = bucket.file(gcsPath);
+    
+    // メタデータを含めて保存
+    await file.save(response.data, {
+      metadata: {
+        contentType: response.headers['content-type'] || 'application/octet-stream',
+        metadata: {
+          sourceUrl: fileUrl,
+          jobId: jobId,
+          originalName: filename,
+          uploadTime: new Date().toISOString()
+        }
+      }
+    });
+    
+    console.log(`[GCS_UPLOAD] GCSへのアップロード完了: ${gcsPath}`);
+    
+    // アップロード検証（存在確認）
+    const [exists] = await file.exists();
+    if (!exists) {
+      throw new Error('ファイルはアップロードされましたが、GCSに存在しません');
+    }
+    
+    console.log(`[GCS_UPLOAD] ファイル存在確認成功: ${gcsPath}`);
+    
+    return {
+      success: true,
+      path: gcsPath,
+      url: `gs://${CONFIG.GCS_BUCKET_NAME}/${gcsPath}`
+    };
+  } catch (error) {
+    console.error('[GCS_UPLOAD_ERROR] ファイルアップロード失敗:', error);
+    
+    // エラーの詳細情報を記録
+    const errorDetails = {
+      message: error instanceof Error ? error.message : '不明なエラー',
+      stack: error instanceof Error ? error.stack : null,
+      fileUrl: fileUrl ? fileUrl.substring(0, 30) + '...' : 'undefined',
+      jobId,
+      filename,
+      time: new Date().toISOString()
+    };
+    
+    console.error('[GCS_UPLOAD_ERROR] 詳細:', JSON.stringify(errorDetails));
+    
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : '不明なエラー'
+    };
+  }
+}
+
+// Cloud Run Jobを起動する関数
+export async function startCloudRunJob(job: ProcessingJob) {
+  try {
+    // Cloud Run Jobをトリガーするためのメッセージをパブリッシュ
+    const dataBuffer = Buffer.from(JSON.stringify(job));
+    const messageId = await topic.publish(dataBuffer);
+    
+    console.log(`Published message for job ${job.id}, message ID: ${messageId}`);
+    return true;
+  } catch (error) {
+    console.error('Failed to publish message:', error);
+    return false;
+  }
+}
+
+// ファイルタイプを判別する関数
+export function getFileType(file: SlackFile): 'video' | 'audio' | 'document' | 'image' | 'other' {
+  const { mimetype } = file;
+  
+  if (mimetype.startsWith('video/')) {
+    return 'video';
+  } else if (mimetype.startsWith('audio/')) {
+    return 'audio';
+  } else if (mimetype.startsWith('image/')) {
+    return 'image';
+  } else if (
+    mimetype.includes('pdf') || 
+    mimetype.includes('word') || 
+    mimetype.includes('text/') || 
+    mimetype.includes('application/vnd.openxmlformats-officedocument')
+  ) {
+    return 'document';
+  } else {
+    return 'other';
+  }
+}
+
+// 日付文字列を抽出する関数
+export function extractDateFromText(text: string): string | null {
+  // YYYY/MM/DDまたは年/月/日形式の日付を抽出
+  const datePattern = /(\d{4}\/\d{1,2}\/\d{1,2})|(\d{4}年\d{1,2}月\d{1,2}日)/;
+  const match = text.match(datePattern);
+  
+  return match ? match[0] : null;
+}
+
+// クライアント名とコンサルタント名を抽出する関数
+export function extractNamesFromText(text: string): { client?: string; consultant?: string } {
+  // 単純な実装例：「クライアント：XXX」、「コンサルタント：YYY」から抽出
+  const clientMatch = text.match(/クライアント[：:]\s*([^\s,]+)/);
+  const consultantMatch = text.match(/コンサルタント[：:]\s*([^\s,]+)/);
+  
+  return {
+    client: clientMatch ? clientMatch[1] : undefined,
+    consultant: consultantMatch ? consultantMatch[1] : undefined
+  };
+}
+
+================
+File: app/api/slack/events/route.ts
+================
+import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
+import { PubSub } from '@google-cloud/pubsub';
+import { CONFIG } from '@app/lib/config';
+import { SlackEventPayload, ProcessingJob } from '@app/lib/types';
+import { uploadFileToGCS, sendSlackMessage, /* startCloudRunJob, */ getFileType } from '@/app/lib/utils';
+import { EventProcessor } from '@/app/lib/kv-store';
+
+// イベント処理インスタンスの作成
+const eventProcessor = new EventProcessor();
+
+// 処理済みイベントの一意識別子を生成する関数
+function generateEventHash(event_id: string, channel: string, ts: string): string {
+  const eventKey = `${event_id}_${channel}_${ts}`;
+  return crypto.createHash('sha256').update(eventKey).digest('hex');
+}
+
+// Slackのイベント受信エンドポイント
+export async function POST(req: NextRequest) {
+  try {
+    // Slackからのリクエストを検証
+    const body = await req.text();
+    
+    // リクエストボディをJSONとしてパース
+    const jsonBody = JSON.parse(body);
+    console.log('Received Slack event:', JSON.stringify(jsonBody));
+    
+    // URL検証チャレンジに応答（最優先）
+    if (jsonBody.type === 'url_verification') {
+      console.log('Responding to URL verification challenge:', jsonBody.challenge);
+      // チャレンジレスポンスを明示的な形式で返す
+      return new Response(JSON.stringify({ challenge: jsonBody.challenge }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // PubSubクライアントの初期化
+    const gcpCredentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    if (!gcpCredentialsJson) {
+      console.error('GOOGLE_APPLICATION_CREDENTIALS_JSON is not set');
+      // Vercel環境ではビルド時にエラーになるべきだが、ランタイムでもチェック
+      return NextResponse.json({ error: 'Server configuration error: GCP credentials missing' }, { status: 500 });
+    }
+
+    let credentials;
+    try {
+      credentials = JSON.parse(gcpCredentialsJson);
+    } catch (err) {
+      console.error('Failed to parse GCP credentials JSON:', err);
+      return NextResponse.json({ error: 'Server configuration error: GCP credentials invalid' }, { status: 500 });
+    }
+
+    const pubsub = new PubSub({
+      projectId: 'dagitoru-mtg', // CONFIG.GCP_PROJECT_ID も利用可
+      credentials,
+    });
+    
+    // シグネチャ検証
+    const timestamp = req.headers.get('x-slack-request-timestamp');
+    const signature = req.headers.get('x-slack-signature');
+    
+    console.log('Request headers:', {
+      timestamp,
+      signature
+    });
+    
+    // リクエスト検証（10分以上前のリクエストは拒否）
+    const now = Math.floor(Date.now() / 1000);
+    if (!timestamp || Number(timestamp) < (now - 60 * 10)) {
+      console.error('Invalid timestamp:', timestamp);
+      return NextResponse.json({ error: 'Invalid timestamp' }, { status: 401 });
+    }
+    
+    // シグネチャ検証
+    if (!signature || !verifySlackSignature(body, signature, timestamp)) {
+      console.error('Invalid signature for request');
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
+    }
+    
+    // イベントコールバック処理
+    if (jsonBody.type === 'event_callback') {
+      const payload = jsonBody as SlackEventPayload;
+      const { event, event_id } = payload;
+      
+      // 重複イベント検出のための一意なハッシュを生成
+      if (event_id && event.ts && event.channel) {
+        // イベントの一意性を確実に識別するハッシュを生成
+        const eventHash = generateEventHash(event_id, event.channel, event.ts);
+        
+        // KVストアを使って重複チェック
+        const isProcessed = await eventProcessor.isProcessedOrMark(eventHash);
+        
+        // 既に処理済みのイベントなら早期リターン
+        if (isProcessed) {
+          console.log(`永続ストアで重複リクエスト検出: ${event_id} (${event.channel}, ${event.ts})`);
+          return NextResponse.json(
+            { ok: true, status: 'duplicate_event_skipped' },
+            { 
+              headers: {
+                'x-processed-event-hash': eventHash,
+                'x-duplicate-detected': 'true',
+                'cache-control': 'private, max-age=3600'
+              }
+            }
+          );
+        }
+        
+        // 以下、実際の処理を行う部分
+        // メッセージかつファイルがある場合のみ処理
+        if (event.type === 'message' && event.files && event.files.length > 0) {
+          console.log(`処理開始: イベントID=${event_id}, チャンネル=${event.channel}, タイムスタンプ=${event.ts}`);
+          
+          try {
+            // ファイル情報の詳細ログ
+            console.log(`処理対象ファイル: ${event.files.length}件`, {
+              files: event.files.map(f => ({
+                id: f.id,
+                name: f.name,
+                size: f.size,
+                type: f.mimetype,
+                url_private: f.url_private ? f.url_private.substring(0, 30) + '...' : undefined
+              }))
+            });
+            
+            // 一意のジョブIDを生成
+            const jobId = uuidv4();
+            console.log(`ジョブID生成: ${jobId}`);
+            
+            // ファイルをGoogle Cloud Storageにアップロード
+            const uploadResults = await Promise.all(
+              event.files.map(async (file) => {
+                try {
+                  if (!file.url_private) {
+                    console.error(`ファイルにURL_PRIVATEがありません: ${file.id}, ${file.name}`);
+                    return {
+                      success: false,
+                      file: file,
+                      error: 'ファイルのプライベートURLがありません'
+                    };
+                  }
+                  
+                  const fileType = getFileType(file);
+                  console.log(`ファイルタイプ: ${fileType}, ファイル名: ${file.name}, サイズ: ${file.size}`);
+                  
+                  // ファイルサイズチェック
+                  if (file.size > CONFIG.MAX_FILE_SIZE) {
+                    console.error(`ファイルサイズが大きすぎます: ${file.name}, ${file.size} bytes`);
+                    return {
+                      success: false,
+                      file: file,
+                      error: 'ファイルサイズが大きすぎます（最大1GB）'
+                    };
+                  }
+                  
+                  console.log(`ファイルアップロード開始: ${file.name}`);
+                  const uploadResult = await uploadFileToGCS(
+                    file.url_private,
+                    jobId,
+                    file.name
+                  );
+                  
+                  if (uploadResult.success) {
+                    console.log(`ファイルのアップロードに成功: ${file.name} -> ${uploadResult.path}`);
+                    return {
+                      success: true,
+                      file: file,
+                      gcsPath: uploadResult.path
+                    };
+                  } else {
+                    console.error(`ファイルのアップロードに失敗: ${file.name}, エラー: ${uploadResult.error}`);
+                    return {
+                      success: false,
+                      file: file,
+                      error: uploadResult.error
+                    };
+                  }
+                } catch (error) {
+                  console.error(`ファイル処理エラー: ${file.name}`, error);
+                  return {
+                    success: false,
+                    file: file,
+                    error: error instanceof Error ? error.message : 'Unknown error'
+                  };
+                }
+              })
+            );
+            
+            // 成功したアップロードの数を確認
+            const successfulUploads = uploadResults.filter(r => r.success);
+            console.log(`アップロード結果: 成功=${successfulUploads.length}件, 失敗=${uploadResults.length - successfulUploads.length}件`);
+            
+            // ジョブ情報を作成
+            if (successfulUploads.length > 0) {
+              const job: ProcessingJob = {
+                id: jobId,
+                fileIds: successfulUploads.map(r => (r as any).file.id),
+                text: event.text || '',
+                channel: event.channel,
+                ts: event.ts,
+                thread_ts: event.thread_ts,
+                user: event.user,
+                status: 'pending',
+                createdAt: new Date(),
+                updatedAt: new Date()
+              };
+              
+              console.log(`ジョブ作成完了: ${jobId}`, {
+                fileCount: job.fileIds?.length || 0,
+                channel: job.channel,
+                timestamp: job.ts
+              });
+
+              // Pub/Subへメッセージを発行
+              const topicName = 'dagitorutopic';
+              const messageData = {
+                jobId: jobId,
+                gcsPaths: successfulUploads.map(r => (r as { success: boolean; file: any; gcsPath: string }).gcsPath),
+                fileNames: successfulUploads.map(r => (r as { success: boolean; file: { name: string }; gcsPath: string }).file.name),
+                // 必要に応じて他の情報も追加
+                slackEvent: {
+                  text: event.text || '',
+                  channel: event.channel,
+                  ts: event.ts,
+                  thread_ts: event.thread_ts,
+                  user: event.user,
+                }
+              };
+
+              try {
+                const messageId = await pubsub.topic(topicName).publishMessage({
+                  data: Buffer.from(JSON.stringify(messageData)),
+                });
+                console.log(`[PUBSUB_PUBLISHED] messageId: ${messageId} for jobId: ${jobId}`);
+                // Slackへの通知はCloud Run側で行うか、ここで「処理を受け付けました」程度にするか検討
+              } catch (err) {
+                console.error(`[PUBSUB_ERROR] Failed to publish message for jobId: ${jobId}`, err);
+                // エラー時のフォールバック処理 (Slack通知、リトライキューなど)
+                // ここでエラーを返すとSlackにリトライされる可能性があるため注意
+                // return NextResponse.json({ error: 'Failed to publish to Pub/Sub' }, { status: 500 });
+              }
+              
+              // 完了メッセージの生成
+              const successCount = successfulUploads.length;
+              const failCount = uploadResults.length - successCount;
+              
+              let statusMessage = `📋 処理ジョブを作成しました (ID: ${jobId})\n`;
+              
+              if (successCount > 0) {
+                statusMessage += `✅ 処理中のファイル: ${successCount}件\n`;
+              }
+              
+              if (failCount > 0) {
+                statusMessage += `❌ 処理できなかったファイル: ${failCount}件\n`;
+                statusMessage += uploadResults
+                  .filter(r => !r.success)
+                  .map(r => `• ${(r as any).file.name}: ${(r as any).error}`)
+                  .join('\n');
+                statusMessage += '\n';
+              }
+              
+              // Slack通知を送信（1回のみ、重複防止に一意のIDを付与）
+              try {
+                await sendSlackMessage(
+                  event.channel,
+                  statusMessage,
+                  event.thread_ts || event.ts
+                );
+                console.log(`Slackメッセージを送信しました: channel=${event.channel}, ts=${event.ts || event.thread_ts}`);
+              } catch (e) {
+                console.error('Slack通知の送信に失敗:', e);
+              }
+              
+              // 処理を受け付けたことを示すレスポンス
+              return NextResponse.json({ 
+                ok: true, 
+                status: 'processing_job_created_and_published',
+                jobId: jobId,
+                pubSubMessageData: messageData // デバッグ用に含めることも可能だが、本番では削除検討
+              });
+            } else {
+              // すべてのファイルのアップロードが失敗した場合
+              try {
+                await sendSlackMessage(
+                  event.channel,
+                  `❌ ファイルの処理に失敗しました。すべてのファイルをアップロードできませんでした。`,
+                  event.thread_ts || event.ts
+                );
+              } catch (e) {
+                console.error('Slack通知の送信に失敗:', e);
+              }
+            }
+          } catch (processingError) {
+            console.error('ファイル処理中にエラーが発生:', processingError);
+          }
+        } else {
+          console.log(`処理対象外のイベント: ${event.type}`);
+        }
+        
+        // 処理完了レスポンス（重複検出用のヘッダー付き）
+        return NextResponse.json(
+          { ok: true, processed: true, event_hash: eventHash },
+          { 
+            headers: {
+              'x-processed-event-hash': eventHash,
+              'x-processed-at': new Date().toISOString(),
+              'cache-control': 'private, max-age=3600'
+            }
+          }
+        );
+      }
+    }
+    
+    // 通常のレスポンス
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error('Error processing Slack event:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+// Slackリクエストのシグネチャを検証する関数
+function verifySlackSignature(body: string, signature: string, timestamp: string): boolean {
+  try {
+    const basestring = `v0:${timestamp}:${body}`;
+    const hmac = crypto
+      .createHmac('sha256', CONFIG.SLACK_SIGNING_SECRET)
+      .update(basestring)
+      .digest('hex');
+    const computedSignature = `v0=${hmac}`;
+    
+    // シグネチャのデバッグログ
+    console.log('Signature verification:', {
+      expected: signature,
+      computed: computedSignature
+    });
+    
+    return crypto.timingSafeEqual(
+      Buffer.from(computedSignature),
+      Buffer.from(signature)
+    );
+  } catch (error) {
+    console.error('Error verifying signature:', error);
+    return false;
+  }
+}
+
+================
+File: cloudrun/src/process.js
+================
+#!/usr/bin/env node
+
+/**
+ * Dagitoru Cloud Run Job
+ * 動画処理、音声抽出、文字起こしを行うメインスクリプト
+ */
+
+require('dotenv').config();
+const express = require('express');
+const { Storage } = require('@google-cloud/storage');
+// const { PubSub } = require('@google-cloud/pubsub'); // Pull型では不要になるためコメントアウト
+const axios = require('axios');
+const path = require('path');
+const fs = require('fs').promises;
+const { execSync } = require('child_process');
+const ffmpeg = require('fluent-ffmpeg');
+const speech = require('@google-cloud/speech').v1p1beta1;
+const { v4: uuidv4 } = require('uuid');
+
+// HTTPサーバー設定
+const app = express();
+const port = process.env.PORT || 8080;
+
+// 定数設定
+const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
+const PROJECT_ID = process.env.GCP_PROJECT_ID;
+const CALLBACK_URL = process.env.CALLBACK_URL;
+// const SUBSCRIPTION_NAME = process.env.PUBSUB_SUBSCRIPTION; // Pull型では不要
+const TEMP_DIR = '/tmp';
+
+// クライアント初期化
+const storage = new Storage();
+const bucket = storage.bucket(BUCKET_NAME);
+// const pubsub = new PubSub({ projectId: PROJECT_ID }); // Pull型では不要
+const speechClient = new speech.SpeechClient();
+
+/* // Pull型サブスクリプションの初期化とメッセージ処理 - Push型では不要なためコメントアウト
+let subscriptionName = SUBSCRIPTION_NAME;
+if (!subscriptionName.startsWith('projects/')) {
+  subscriptionName = `projects/${PROJECT_ID}/subscriptions/${SUBSCRIPTION_NAME}`;
+}
+console.log(`[PUBSUB_INIT] Using subscription: ${subscriptionName}`);
+const subscription = pubsub.subscription(subscriptionName);
+async function processMessages() { ... }
+const setupMessageListener = () => { ... };
+setupMessageListener();
+*/
+
+// ミドルウェア設定 (既に存在することを確認)
+app.use(express.json()); // bodyParser.json() の代わりに express.json() を使用
+
+// ルート設定 - ヘルスチェック用
+app.get('/', (req, res) => {
+  res.status(200).send('Dagitoru Processor is running');
+});
+
+// 新しい /pubsub エンドポイント (Push型サブスクリプション用)
+app.post('/pubsub', async (req, res) => {
+  try {
+    console.log('[PUBSUB_PUSH_RECEIVED] Received Pub/Sub message via Push');
+    if (!req.body || !req.body.message || !req.body.message.data) {
+      console.error('[PUBSUB_PUSH_ERROR] Invalid Pub/Sub message format');
+      return res.status(400).send('Bad Request: Invalid Pub/Sub message format');
+    }
+
+    const messageData = Buffer.from(req.body.message.data, 'base64').toString('utf8');
+    console.log(`[PUBSUB_PUSH_DATA] Decoded message data: ${messageData.substring(0, 500)}`);
+    
+    const job = JSON.parse(messageData); // parseMessage関数は使わず直接パース
+    
+    if (!job || !job.id || !job.fileIds) {
+      console.error('[PUBSUB_PUSH_ERROR] Invalid job data after parsing', job);
+      return res.status(400).send('Bad Request: Invalid job data after parsing');
+    }
+
+    console.log(`[PUBSUB_PUSH_JOB] Processing job ID: ${job.id}`);
+
+    // ジョブ処理を非同期で実行
+    processJob(job)
+      .then(result => {
+        console.log(`[PUBSUB_PUSH_JOB_SUCCESS] Job ${job.id} processed successfully.`);
+        // sendCallback は processJob 内で呼び出されるためここでは不要
+      })
+      .catch(error => {
+        console.error(`[PUBSUB_PUSH_JOB_ERROR] Error processing job ${job.id}: ${error.message}`, error);
+        // エラー時のコールバックも processJob 内で処理される想定
+      });
+
+    res.status(200).send('OK'); // Pub/Sub にはすぐにACKを返す
+  } catch (err) {
+    console.error('[PUBSUB_PUSH_FATAL_ERROR] Error handling Pub/Sub push message:', err);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+// 以前の /process エンドポイントはPub/Sub Push型では通常不要になるためコメントアウト
+/*
+app.post('/process', async (req, res) => {
+  console.log('Processing request received:', req.body);
+  // ... (以前のコード)
+});
+*/
+
+// サーバー起動
+app.listen(port, () => {
+  console.log(`Dagitoru Processor listening on port ${port}`);
+});
+
+// parseMessage関数は /pubsub エンドポイント内で直接処理するため、ここでは不要になる可能性があります。
+// ただし、processJob関数がまだ依存している場合は残します。
+// 今回は直接JSON.parseするため、parseMessageはコメントアウトまたは削除の対象です。
+/*
+function parseMessage(message) {
+  // ... (以前のコード)
+}
+*/
+
+/**
+ * ジョブを処理する関数 (内容は変更なし、呼び出し元が変わるだけ)
+ */
+async function processJob(job) {
+  console.log(`[PROCESS_JOB] Processing job: ${job.id}`);
+  
+  try {
+    // ジョブプレフィックス（GCSのパス）
+    const jobPrefix = `meetings/${getFormattedDate()}/${job.id}/`;
+    
+    // 各ファイルIDに対応するファイルをダウンロードして処理
+    const fileCount = job.fileIds.length;
+    console.log(`[PROCESS_JOB] Processing ${fileCount} files for job ${job.id}`);
+    
+    if (fileCount === 0) {
+      throw new Error('No files to process');
+    }
+    
+    // 最初のファイルを取得（現在は単一ファイル対応）
+    const fileId = job.fileIds[0];
+    console.log(`[PROCESS_JOB] Processing file ID: ${fileId}`);
+    
+    // GCSからメディアファイルを取得
+    let mediaFilePath;
+    try {
+      const files = await bucket.getFiles({ prefix: jobPrefix });
+      for (const file of files[0]) {
+        if (file.name.match(/\.(mp4|mp3|wav|m4a|webm)$/i)) {
+          mediaFilePath = file.name;
+          break;
+        }
+      }
+      
+      if (!mediaFilePath) {
+        throw new Error('Media file not found in GCS bucket');
+      }
+      
+      console.log(`[PROCESS_JOB] Found media file: ${mediaFilePath}`);
+    } catch (error) {
+      console.error(`[PROCESS_JOB_ERROR] Error finding media file: ${error.message}`);
+      throw error;
+    }
+    
+    // 作業ディレクトリを作成
+    await fs.mkdir(TEMP_DIR, { recursive: true });
+    
+    // GCSからメディアファイルをダウンロード
+    const localMediaPath = path.join(TEMP_DIR, path.basename(mediaFilePath));
+    console.log(`[PROCESS_JOB] Downloading media file to: ${localMediaPath}`);
+    
+    try {
+      await bucket.file(mediaFilePath).download({ destination: localMediaPath });
+      console.log(`[PROCESS_JOB] Downloaded media file (${fs.statSync(localMediaPath).size} bytes)`);
+    } catch (error) {
+      console.error(`[PROCESS_JOB_ERROR] Error downloading media file: ${error.message}`);
+      throw error;
+    }
+    
+    // メディアファイルからオーディオを抽出
+    const localAudioPath = path.join(TEMP_DIR, `${job.id}.wav`);
+    console.log(`[PROCESS_JOB] Extracting audio to: ${localAudioPath}`);
+    
+    try {
+      await extractAudio(localMediaPath, localAudioPath);
+      console.log(`[PROCESS_JOB] Audio extraction complete (${fs.statSync(localAudioPath).size} bytes)`);
+    } catch (error) {
+      console.error(`[PROCESS_JOB_ERROR] Error extracting audio: ${error.message}`);
+      throw error;
+    }
+    
+    // 音声認識を実行
+    console.log(`[PROCESS_JOB] Starting speech recognition`);
+    let transcriptData;
+    
+    try {
+      transcriptData = await transcribeAudio(localAudioPath, job.text || '');
+      console.log(`[PROCESS_JOB] Transcription complete: ${transcriptData.transcript.substring(0, 100)}...`);
+    } catch (error) {
+      console.error(`[PROCESS_JOB_ERROR] Error in speech recognition: ${error.message}`);
+      throw error;
+    }
+    
+    // 文字起こし結果をGCSにアップロード
+    const transcriptGcsPath = `${jobPrefix}transcript.json`;
+    const transcriptLocalPath = path.join(TEMP_DIR, 'transcript.json');
+    
+    try {
+      await fs.writeFile(transcriptLocalPath, JSON.stringify(transcriptData, null, 2));
+      await bucket.upload(transcriptLocalPath, { destination: transcriptGcsPath });
+      console.log(`[PROCESS_JOB] Uploaded transcript to: ${transcriptGcsPath}`);
+    } catch (error) {
+      console.error(`[PROCESS_JOB_ERROR] Error uploading transcript: ${error.message}`);
+      throw error;
+    }
+    
+    // 一時ファイルを削除
+    try {
+      await fs.unlink(localMediaPath).catch(() => {});
+      await fs.unlink(localAudioPath).catch(() => {});
+      await fs.unlink(transcriptLocalPath).catch(() => {});
+      console.log(`[PROCESS_JOB] Cleaned up temporary files`);
+    } catch (error) {
+      console.log(`[PROCESS_JOB_WARNING] Error cleaning up temporary files: ${error.message}`);
+      // クリーンアップエラーは致命的ではないので続行
+    }
+    
+    console.log(`[PROCESS_JOB] Job ${job.id} completed successfully`);
+    
+    // コールバック送信
+    const callbackData = {
+      jobId: job.id,
+      status: 'success',
+      transcriptUrl: `https://storage.googleapis.com/${BUCKET_NAME}/${transcriptGcsPath}`,
+      metadata: transcriptData.metadata || {}
+    };
+    
+    await sendCallback(callbackData);
+    
+    // 処理結果を返す
+    return callbackData;
+  } catch (error) {
+    console.error(`[PROCESS_JOB_ERROR] Error processing job ${job.id}: ${error.message}`, error);
+    
+    // エラー情報をコールバック
+    const callbackData = {
+      jobId: job.id,
+      status: 'failure',
+      error: error.message
+    };
+    
+    try {
+      await sendCallback(callbackData);
+    } catch (callbackError) {
+      console.error(`[CALLBACK_ERROR] Failed to send error callback: ${callbackError.message}`);
+    }
+    
+    throw error;
+  }
+}
+
+/**
+ * 動画から音声を抽出する関数
+ */
+async function extractAudio(videoPath, audioPath) {
+  return new Promise((resolve, reject) => {
+    console.log(`Extracting audio from ${videoPath} to ${audioPath}`);
+    
+    ffmpeg(videoPath)
+      .output(audioPath)
+      .audioCodec('flac')
+      .audioChannels(1)
+      .audioFrequency(16000)
+      .on('end', () => {
+        console.log('Audio extraction completed');
+        resolve();
+      })
+      .on('error', (err) => {
+        console.error('Error during audio extraction:', err);
+        reject(err);
+      })
+      .run();
+  });
+}
+
+/**
+ * 音声ファイルを文字起こしする関数
+ */
+async function transcribeSpeech(audioPath, textContext) {
+  console.log(`Starting speech recognition for ${audioPath}`);
+  console.log(`With text context (first 100 chars): ${textContext ? textContext.substring(0,100) : 'N/A'}`);
+  
+  // ファイルを読み込み
+  const audioBytes = await fs.readFile(audioPath);
+  const audio = {
+    content: audioBytes.toString('base64')
+  };
+  
+  // 音声認識リクエストの設定
+  const config = {
+    encoding: 'FLAC',
+    sampleRateHertz: 16000,
+    languageCode: 'ja-JP',
+    enableAutomaticPunctuation: true,
+    enableWordTimeOffsets: true,
+    model: 'latest_long',
+    useEnhanced: true,
+    metadata: {
+      interactionType: 'DISCUSSION',
+      industryNaicsCodeOfAudio: 541990, // Professional Services
+      microphoneDistance: 'NEARFIELD',
+      originalMediaType: 'AUDIO'
+    },
+    speechContexts: textContext ? [{
+      phrases: textContext.split('\\n').map(line => line.trim()).filter(line => line.length > 0),
+      boost: 15
+    }] : [],
+  };
+  
+  const request = {
+    audio: audio,
+    config: config
+  };
+  
+  try {
+    // 長時間音声の場合、非同期認識を使用
+    const [operation] = await speechClient.longRunningRecognize(request);
+    console.log('Waiting for speech recognition to complete...');
+    
+    // 非同期処理が完了するまで待機
+    const [response] = await operation.promise();
+    
+    // 結果を文字列に連結
+    let transcript = '';
+    const results = response.results;
+    
+    if (results && results.length > 0) {
+      for (const result of results) {
+        if (result.alternatives && result.alternatives.length > 0) {
+          transcript += result.alternatives[0].transcript + ' ';
+        }
+      }
+    }
+    
+    console.log(`Transcription completed: ${transcript.length} characters`);
+    return transcript.trim();
+  } catch (error) {
+    console.error('Error in speech recognition:', error);
+    throw new Error(`Speech recognition failed: ${error.message}`);
+  }
+}
+
+/**
+ * 処理結果をコールバックURLに送信する関数
+ */
+async function sendCallback(data) {
+  if (!CALLBACK_URL) {
+    console.log('[CALLBACK] No callback URL configured, skipping callback');
+    return;
+  }
+  
+  try {
+    console.log(`[CALLBACK] Sending callback for job ${data.jobId}`);
+    console.log(`[CALLBACK] Callback URL: ${CALLBACK_URL}`);
+    console.log(`[CALLBACK] Callback data: ${JSON.stringify(data)}`);
+    
+    const response = await axios.post(CALLBACK_URL, data, {
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000 // 10秒でタイムアウト
+    });
+    
+    console.log(`[CALLBACK] Callback sent successfully, response: ${response.status} ${response.statusText}`);
+    return true;
+  } catch (error) {
+    console.error(`[CALLBACK_ERROR] Error sending callback: ${error.message}`, error);
+    
+    // エラーの詳細ログ
+    const errorDetails = {
+      message: error.message,
+      code: error.code,
+      response: error.response ? {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data
+      } : null
+    };
+    
+    console.error(`[CALLBACK_ERROR] Detailed error: ${JSON.stringify(errorDetails)}`);
+    return false;
+  }
+}
+
+/**
+ * 日付を整形して返す関数（yyyyMMdd_HHmm形式）
+ */
+function getFormattedDate() {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  
+  return `${year}${month}${day}_${hours}${minutes}`;
+}
+
+================
+File: package.json
+================
+{
+  "name": "dagitoru-v4",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@google-cloud/pubsub": "^5.0.0",
+    "@google-cloud/storage": "^7.16.0",
+    "@notionhq/client": "^3.0.1",
+    "@slack/web-api": "^7.9.1",
+    "@vercel/og": "^0.6.8",
+    "axios": "^1.9.0",
+    "dotenv": "^16.5.0",
+    "encoding": "^0.1.13",
+    "geist": "^1.4.2",
+    "next": "13.5.6",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "supports-color": "^10.0.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.18",
+    "@types/react": "^18.2.60",
+    "@types/react-dom": "^18.2.19",
+    "typescript": "^5.4.3"
+  }
+}
+
+================
+File: vercel.json
+================
+{
+  "crons": [],
+  "functions": {
+    "app/api/**/*": {
+      "memory": 1024
+    }
+  }
+}
+
+
+
+
+================================================================
+End of Codebase
+================================================================

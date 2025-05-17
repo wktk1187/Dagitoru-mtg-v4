@@ -4,8 +4,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { PubSub } from '@google-cloud/pubsub';
 import { CONFIG } from '@app/lib/config';
 import { SlackEventPayload, ProcessingJob } from '@app/lib/types';
+import { JobRecord, JobStatus } from '@app/lib/types/job';
 import { uploadFileToGCS, sendSlackMessage, /* startCloudRunJob, */ getFileType } from '@/app/lib/utils';
 import { EventProcessor } from '@/app/lib/kv-store';
+import { db } from '@/app/lib/firebase';
+import { Timestamp } from 'firebase-admin/firestore';
 
 // イベント処理インスタンスの作成
 const eventProcessor = new EventProcessor();
@@ -192,24 +195,26 @@ export async function POST(req: NextRequest) {
             
             // ジョブ情報を作成
             if (successfulUploads.length > 0) {
-              const job: ProcessingJob = {
-                id: jobId,
-                fileIds: successfulUploads.map(r => (r as any).file.id),
-                text: event.text || '',
-                channel: event.channel,
-                ts: event.ts,
-                thread_ts: event.thread_ts,
-                user: event.user,
+              // Firestoreにジョブレコードを作成
+              const jobRecord: JobRecord = {
+                jobId: jobId,
                 status: 'pending',
-                createdAt: new Date(),
-                updatedAt: new Date()
+                createdAt: Timestamp.now(),
+                updatedAt: Timestamp.now(),
+                gcsPaths: successfulUploads.map(r => (r as { success: boolean; file: any; gcsPath: string }).gcsPath),
+                fileNames: successfulUploads.map(r => (r as { success: boolean; file: { name: string }; gcsPath: string }).file.name),
+                slackEvent: event, // 元のSlackイベント全体を保存
               };
-              
-              console.log(`ジョブ作成完了: ${jobId}`, {
-                fileCount: job.fileIds?.length || 0,
-                channel: job.channel,
-                timestamp: job.ts
-              });
+
+              try {
+                await db.collection("jobs").doc(jobId).set(jobRecord);
+                console.log(`[FIRESTORE_JOB_CREATED] jobId: ${jobId} status: pending`);
+              } catch (dbError) {
+                console.error(`[FIRESTORE_ERROR] Failed to create job record for jobId: ${jobId}`, dbError);
+                // Firestoreへの書き込み失敗時のエラーハンドリング
+                // 必要に応じてSlack通知や、処理を中断するなどの対応
+                // ここでは処理を継続し、Pub/Sub発行は試みるが、ジョブ追跡はできなくなる
+              }
 
               // Pub/Subへメッセージを発行
               const topicName = 'dagitorutopic';

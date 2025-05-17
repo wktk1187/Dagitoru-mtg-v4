@@ -8,7 +8,7 @@
 require('dotenv').config();
 const express = require('express');
 const { Storage } = require('@google-cloud/storage');
-// const { PubSub } = require('@google-cloud/pubsub'); // Pull型では不要になるためコメントアウト
+const { PubSub } = require('@google-cloud/pubsub');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs').promises;
@@ -16,6 +16,7 @@ const { execSync } = require('child_process');
 const ffmpeg = require('fluent-ffmpeg');
 const speech = require('@google-cloud/speech').v1p1beta1;
 const { v4: uuidv4 } = require('uuid');
+const { Firestore, Timestamp } = require('@google-cloud/firestore');
 
 // HTTPサーバー設定
 const app = express();
@@ -25,26 +26,16 @@ const port = process.env.PORT || 8080;
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
 const PROJECT_ID = process.env.GCP_PROJECT_ID;
 const CALLBACK_URL = process.env.CALLBACK_URL;
-// const SUBSCRIPTION_NAME = process.env.PUBSUB_SUBSCRIPTION; // Pull型では不要
 const TEMP_DIR = '/tmp';
 
 // クライアント初期化
 const storage = new Storage();
 const bucket = storage.bucket(BUCKET_NAME);
-// const pubsub = new PubSub({ projectId: PROJECT_ID }); // Pull型では不要
+const pubsub = new PubSub({ projectId: PROJECT_ID });
 const speechClient = new speech.SpeechClient();
 
-/* // Pull型サブスクリプションの初期化とメッセージ処理 - Push型では不要なためコメントアウト
-let subscriptionName = SUBSCRIPTION_NAME;
-if (!subscriptionName.startsWith('projects/')) {
-  subscriptionName = `projects/${PROJECT_ID}/subscriptions/${SUBSCRIPTION_NAME}`;
-}
-console.log(`[PUBSUB_INIT] Using subscription: ${subscriptionName}`);
-const subscription = pubsub.subscription(subscriptionName);
-async function processMessages() { ... }
-const setupMessageListener = () => { ... };
-setupMessageListener();
-*/
+// Firestoreクライアントの初期化
+const firestore = new Firestore();
 
 // ミドルウェア設定 (既に存在することを確認)
 app.use(express.json()); // bodyParser.json() の代わりに express.json() を使用
@@ -56,40 +47,42 @@ app.get('/', (req, res) => {
 
 // 新しい /pubsub エンドポイント (Push型サブスクリプション用)
 app.post('/pubsub', async (req, res) => {
+  console.log('[PUBSUB_PUSH_RECEIVED] Request body:', JSON.stringify(req.body));
+  if (!req.body || !req.body.message) {
+    console.error('[PUBSUB_PUSH_ERROR] Invalid Pub/Sub message format');
+    return res.status(400).send('Invalid Pub/Sub message format');
+  }
+
+  const pubSubMessage = req.body.message;
+  const parsedMessageData = await parseMessage(pubSubMessage);
+
+  if (!parsedMessageData || !parsedMessageData.jobId) {
+    console.error('[PUBSUB_PUSH_ERROR] Missing jobId in parsed message data');
+    return res.status(400).send('Missing jobId in message data');
+  }
+  const { jobId, gcsPaths, fileNames, slackEvent, textContext } = parsedMessageData;
+  console.log(`[PUBSUB_PUSH_JOB_START] Starting job: ${jobId}`);
+  
   try {
-    console.log('[PUBSUB_PUSH_RECEIVED] Received Pub/Sub message via Push');
-    if (!req.body || !req.body.message || !req.body.message.data) {
-      console.error('[PUBSUB_PUSH_ERROR] Invalid Pub/Sub message format');
-      return res.status(400).send('Bad Request: Invalid Pub/Sub message format');
+    const result = await processJob(jobId, gcsPaths, fileNames, slackEvent, textContext);
+    if (result.success) {
+      console.log(`[JOB_SUCCESS] Job ${jobId} completed successfully.`);
+      // ここでのSlack通知はVercel側に任せるため、基本的には204を返す
+      // Firestoreへの最終ステータス更新はprocessJob内で行われる
+      res.status(204).send(); 
+    } else {
+      console.error(`[JOB_FAILED] Job ${jobId} failed. Error: ${result.error}`);
+      // エラーの場合もPub/SubにはACKを返す（リトライはFirestoreの状態を見て別途行う設計のため）
+      // Firestoreへのfailedステータス更新はprocessJob内で行われる
+      res.status(204).send(); // または適切なエラーコードを返すが、Pub/Subのリトライポリシーに注意
     }
-
-    const messageData = Buffer.from(req.body.message.data, 'base64').toString('utf8');
-    console.log(`[PUBSUB_PUSH_DATA] Decoded message data: ${messageData.substring(0, 500)}`);
-    
-    const job = JSON.parse(messageData); // parseMessage関数は使わず直接パース
-    
-    if (!job || !job.id || !job.fileIds) {
-      console.error('[PUBSUB_PUSH_ERROR] Invalid job data after parsing', job);
-      return res.status(400).send('Bad Request: Invalid job data after parsing');
-    }
-
-    console.log(`[PUBSUB_PUSH_JOB] Processing job ID: ${job.id}`);
-
-    // ジョブ処理を非同期で実行
-    processJob(job)
-      .then(result => {
-        console.log(`[PUBSUB_PUSH_JOB_SUCCESS] Job ${job.id} processed successfully.`);
-        // sendCallback は processJob 内で呼び出されるためここでは不要
-      })
-      .catch(error => {
-        console.error(`[PUBSUB_PUSH_JOB_ERROR] Error processing job ${job.id}: ${error.message}`, error);
-        // エラー時のコールバックも processJob 内で処理される想定
-      });
-
-    res.status(200).send('OK'); // Pub/Sub にはすぐにACKを返す
-  } catch (err) {
-    console.error('[PUBSUB_PUSH_FATAL_ERROR] Error handling Pub/Sub push message:', err);
-    res.status(500).send('Internal Server Error');
+  } catch (error) {
+    console.error(`[JOB_UNHANDLED_ERROR] Unhandled error processing job ${jobId}:`, error);
+    // このレベルのエラーは握りつぶさず、500を返してPub/Subにリトライさせるか検討
+    // ただし、リトライで解決しない問題の場合、無限ループになる可能性も
+    // 安全策としてACKし、Firestoreの状態で追跡・手動介入を基本とする方が良い場合もある
+    await updateJobStatus(jobId, 'failed', { errorDetails: 'Unhandled exception in /pubsub endpoint: ' + error.message });
+    res.status(500).send('Internal Server Error'); // Pub/Subがリトライする
   }
 });
 
@@ -106,152 +99,106 @@ app.listen(port, () => {
   console.log(`Dagitoru Processor listening on port ${port}`);
 });
 
-// parseMessage関数は /pubsub エンドポイント内で直接処理するため、ここでは不要になる可能性があります。
-// ただし、processJob関数がまだ依存している場合は残します。
-// 今回は直接JSON.parseするため、parseMessageはコメントアウトまたは削除の対象です。
-/*
-function parseMessage(message) {
-  // ... (以前のコード)
-}
-*/
-
 /**
  * ジョブを処理する関数 (内容は変更なし、呼び出し元が変わるだけ)
  */
-async function processJob(job) {
-  console.log(`[PROCESS_JOB] Processing job: ${job.id}`);
-  
+async function processJob(jobId, gcsPaths, fileNames, slackEvent, textContext) {
+  console.log(`[PROCESS_JOB_START] jobId: ${jobId}`, { gcsPaths, fileNames });
+  await updateJobStatus(jobId, 'processing_audio');
+
+  if (!gcsPaths || gcsPaths.length === 0) {
+    console.error('[PROCESS_JOB_ERROR] No GCS paths provided for job:', jobId);
+    await updateJobStatus(jobId, 'failed', { errorDetails: 'No GCS paths provided' });
+    return { success: false, error: 'No GCS paths provided' };
+  }
+
+  // 現在は最初のファイルのみ処理する前提（後で複数ファイル対応検討）
+  const gcsPath = gcsPaths[0]; 
+  const originalFileName = fileNames && fileNames.length > 0 ? fileNames[0] : 'unknown_file';
+  const bucketName = gcsPath.split('/')[2];
+  const filePath = gcsPath.substring(gcsPath.indexOf(bucketName) + bucketName.length + 1);
+
+  let transcript;
+  let audioProcessedPath;
+
   try {
-    // ジョブプレフィックス（GCSのパス）
-    const jobPrefix = `meetings/${getFormattedDate()}/${job.id}/`;
+    // 1. GCSからファイルをダウンロード
+    const tempInputPath = path.join(TEMP_DIR, `input-${jobId}-${originalFileName}`);
+    console.log(`[GCS_DOWNLOAD_START] Downloading ${gcsPath} to ${tempInputPath}`);
+    await storage.bucket(bucketName).file(filePath).download({ destination: tempInputPath });
+    console.log(`[GCS_DOWNLOAD_SUCCESS] File downloaded to ${tempInputPath}`);
+
+    // 2. 音声抽出 (ffmpeg)
+    const tempAudioOutputPath = path.join(TEMP_DIR, `audio-${jobId}-${uuidv4()}.flac`);
+    console.log(`[FFMPEG_START] Converting ${tempInputPath} to ${tempAudioOutputPath}`);
+    await new Promise((resolve, reject) => {
+      ffmpeg(tempInputPath)
+        .toFormat('flac')
+        .audioFrequency(16000)
+        .audioChannels(1)
+        .on('error', (err) => {
+          console.error('[FFMPEG_ERROR]', err);
+          reject(err);
+        })
+        .on('end', () => {
+          console.log('[FFMPEG_SUCCESS] Audio conversion finished.');
+          resolve();
+        })
+        .save(tempAudioOutputPath);
+    });
     
-    // 各ファイルIDに対応するファイルをダウンロードして処理
-    const fileCount = job.fileIds.length;
-    console.log(`[PROCESS_JOB] Processing ${fileCount} files for job ${job.id}`);
-    
-    if (fileCount === 0) {
-      throw new Error('No files to process');
-    }
-    
-    // 最初のファイルを取得（現在は単一ファイル対応）
-    const fileId = job.fileIds[0];
-    console.log(`[PROCESS_JOB] Processing file ID: ${fileId}`);
-    
-    // GCSからメディアファイルを取得
-    let mediaFilePath;
-    try {
-      const files = await bucket.getFiles({ prefix: jobPrefix });
-      for (const file of files[0]) {
-        if (file.name.match(/\.(mp4|mp3|wav|m4a|webm)$/i)) {
-          mediaFilePath = file.name;
-          break;
-        }
-      }
-      
-      if (!mediaFilePath) {
-        throw new Error('Media file not found in GCS bucket');
-      }
-      
-      console.log(`[PROCESS_JOB] Found media file: ${mediaFilePath}`);
-    } catch (error) {
-      console.error(`[PROCESS_JOB_ERROR] Error finding media file: ${error.message}`);
-      throw error;
-    }
-    
-    // 作業ディレクトリを作成
-    await fs.mkdir(TEMP_DIR, { recursive: true });
-    
-    // GCSからメディアファイルをダウンロード
-    const localMediaPath = path.join(TEMP_DIR, path.basename(mediaFilePath));
-    console.log(`[PROCESS_JOB] Downloading media file to: ${localMediaPath}`);
-    
-    try {
-      await bucket.file(mediaFilePath).download({ destination: localMediaPath });
-      console.log(`[PROCESS_JOB] Downloaded media file (${fs.statSync(localMediaPath).size} bytes)`);
-    } catch (error) {
-      console.error(`[PROCESS_JOB_ERROR] Error downloading media file: ${error.message}`);
-      throw error;
-    }
-    
-    // メディアファイルからオーディオを抽出
-    const localAudioPath = path.join(TEMP_DIR, `${job.id}.wav`);
-    console.log(`[PROCESS_JOB] Extracting audio to: ${localAudioPath}`);
-    
-    try {
-      await extractAudio(localMediaPath, localAudioPath);
-      console.log(`[PROCESS_JOB] Audio extraction complete (${fs.statSync(localAudioPath).size} bytes)`);
-    } catch (error) {
-      console.error(`[PROCESS_JOB_ERROR] Error extracting audio: ${error.message}`);
-      throw error;
-    }
-    
-    // 音声認識を実行
-    console.log(`[PROCESS_JOB] Starting speech recognition`);
-    let transcriptData;
-    
-    try {
-      transcriptData = await transcribeAudio(localAudioPath, job.text || '');
-      console.log(`[PROCESS_JOB] Transcription complete: ${transcriptData.transcript.substring(0, 100)}...`);
-    } catch (error) {
-      console.error(`[PROCESS_JOB_ERROR] Error in speech recognition: ${error.message}`);
-      throw error;
-    }
-    
-    // 文字起こし結果をGCSにアップロード
-    const transcriptGcsPath = `${jobPrefix}transcript.json`;
-    const transcriptLocalPath = path.join(TEMP_DIR, 'transcript.json');
-    
-    try {
-      await fs.writeFile(transcriptLocalPath, JSON.stringify(transcriptData, null, 2));
-      await bucket.upload(transcriptLocalPath, { destination: transcriptGcsPath });
-      console.log(`[PROCESS_JOB] Uploaded transcript to: ${transcriptGcsPath}`);
-    } catch (error) {
-      console.error(`[PROCESS_JOB_ERROR] Error uploading transcript: ${error.message}`);
-      throw error;
-    }
-    
-    // 一時ファイルを削除
-    try {
-      await fs.unlink(localMediaPath).catch(() => {});
-      await fs.unlink(localAudioPath).catch(() => {});
-      await fs.unlink(transcriptLocalPath).catch(() => {});
-      console.log(`[PROCESS_JOB] Cleaned up temporary files`);
-    } catch (error) {
-      console.log(`[PROCESS_JOB_WARNING] Error cleaning up temporary files: ${error.message}`);
-      // クリーンアップエラーは致命的ではないので続行
-    }
-    
-    console.log(`[PROCESS_JOB] Job ${job.id} completed successfully`);
-    
-    // コールバック送信
-    const callbackData = {
-      jobId: job.id,
-      status: 'success',
-      transcriptUrl: `https://storage.googleapis.com/${BUCKET_NAME}/${transcriptGcsPath}`,
-      metadata: transcriptData.metadata || {}
-    };
-    
-    await sendCallback(callbackData);
-    
-    // 処理結果を返す
-    return callbackData;
+    // 抽出した音声をGCSにアップロード (文字起こしAPIがGCS URIを直接扱えるなら不要な場合も)
+    audioProcessedPath = `processed-audio/${jobId}/${path.basename(tempAudioOutputPath)}`;
+    await storage.bucket(BUCKET_NAME).upload(tempAudioOutputPath, {
+        destination: audioProcessedPath,
+    });
+    console.log(`[GCS_UPLOAD_AUDIO_SUCCESS] Processed audio uploaded to gs://${BUCKET_NAME}/${audioProcessedPath}`);
+    await updateJobStatus(jobId, 'transcribing', { processedAudioGcsPath: `gs://${BUCKET_NAME}/${audioProcessedPath}` });
+
+    // 3. Speech-to-Textで文字起こし
+    console.log(`[STT_START] Transcribing audio from gs://${BUCKET_NAME}/${audioProcessedPath}`);
+    const [operation] = await speechClient.longRunningRecognize({
+      audio: { uri: `gs://${BUCKET_NAME}/${audioProcessedPath}` },
+      config: {
+        encoding: 'FLAC',
+        sampleRateHertz: 16000,
+        languageCode: 'ja-JP',
+        enableAutomaticPunctuation: true,
+        speechContexts: textContext ? [{ phrases: textContext.split(','), boost: 15 }] : [],
+      },
+    });
+    const [response] = await operation.promise();
+    transcript = response.results.map(result => result.alternatives[0].transcript).join('\n');
+    console.log(`[STT_SUCCESS] Transcription length: ${transcript.length}`);
+    const transcriptGcsPath = `transcripts/${jobId}/transcript.txt`;
+    await storage.bucket(BUCKET_NAME).file(transcriptGcsPath).save(transcript);
+    console.log(`[GCS_UPLOAD_TRANSCRIPT_SUCCESS] Transcript uploaded to gs://${BUCKET_NAME}/${transcriptGcsPath}`);
+    await updateJobStatus(jobId, 'summarizing', { transcriptGcsPath: `gs://${BUCKET_NAME}/${transcriptGcsPath}` });
+
+    // ここでGemini API呼び出しとNotionへの保存が入る (現状のコードでは省略されている)
+    // 実際にはこの後に summarizeAndSaveToNotion(transcript, slackEvent, jobId) のような関数を呼び出す
+    console.log('[GEMINI_NOTION_PLACEHOLDER] Summarization and Notion update would happen here.');
+    // ダミーのNotion URLとサマリー
+    const dummyNotionUrl = `https://www.notion.so/dummy/${jobId}`;
+    const dummySummary = `This is a summary for job ${jobId}`;
+
+    // 全処理完了
+    await updateJobStatus(jobId, 'completed', { result: { notionUrl: dummyNotionUrl, summary: dummySummary, transcriptUrl: `gs://${BUCKET_NAME}/${transcriptGcsPath}` } });
+    console.log(`[PROCESS_JOB_COMPLETE] jobId: ${jobId}`);
+    return { success: true, notionUrl: dummyNotionUrl, summary: dummySummary, transcriptUrl: `gs://${BUCKET_NAME}/${transcriptGcsPath}` };
+
   } catch (error) {
-    console.error(`[PROCESS_JOB_ERROR] Error processing job ${job.id}: ${error.message}`, error);
-    
-    // エラー情報をコールバック
-    const callbackData = {
-      jobId: job.id,
-      status: 'failure',
-      error: error.message
-    };
-    
-    try {
-      await sendCallback(callbackData);
-    } catch (callbackError) {
-      console.error(`[CALLBACK_ERROR] Failed to send error callback: ${callbackError.message}`);
-    }
-    
-    throw error;
+    console.error(`[PROCESS_JOB_ERROR] Error in processJob for jobId ${jobId}:`, error);
+    await updateJobStatus(jobId, 'failed', { errorDetails: error.message || 'Unknown error during processing' });
+    return { success: false, error: error.message };
+  } finally {
+    // 一時ファイルの削除
+    // try {
+    //   if (tempInputPath) await fs.unlink(tempInputPath);
+    //   if (tempAudioOutputPath) await fs.unlink(tempAudioOutputPath);
+    // } catch (cleanupError) {
+    //   console.warn('[CLEANUP_ERROR] Failed to delete temporary files:', cleanupError);
+    // }
   }
 }
 
@@ -400,4 +347,46 @@ function getFormattedDate() {
   const minutes = String(date.getMinutes()).padStart(2, '0');
   
   return `${year}${month}${day}_${hours}${minutes}`;
+}
+
+// ジョブステータス更新関数
+async function updateJobStatus(jobId, status, extra = {}) {
+  if (!jobId) {
+    console.error('[FIRESTORE_ERROR] jobId is missing, cannot update status.');
+    return;
+  }
+  const jobRef = firestore.collection('jobs').doc(jobId);
+  const dataToUpdate = {
+    status,
+    updatedAt: Timestamp.now(),
+    ...extra,
+  };
+  try {
+    await jobRef.update(dataToUpdate);
+    console.log(`[FIRESTORE_JOB_UPDATED] jobId: ${jobId} status: ${status}`, JSON.stringify(extra));
+  } catch (error) {
+    console.error(`[FIRESTORE_ERROR] Failed to update job ${jobId} to status ${status}:`, error);
+  }
+}
+
+async function parseMessage(message) {
+  // ... (既存のparseMessage関数、変更の可能性あり)
+  // Base64デコードとJSONパース
+  let messageDataString;
+  if (message.data) {
+    messageDataString = Buffer.from(message.data, 'base64').toString('utf-8');
+    console.log('[PUBSUB_PUSH_DATA_STRING]', messageDataString);
+  } else {
+    console.error('[PUBSUB_PUSH_ERROR] No data in message');
+    return null;
+  }
+
+  try {
+    const parsedData = JSON.parse(messageDataString);
+    console.log('[PUBSUB_PUSH_PARSED_DATA]', JSON.stringify(parsedData));
+    return parsedData;
+  } catch (error) {
+    console.error('[PUBSUB_PUSH_PARSE_ERROR]', error, 'Raw data:', messageDataString);
+    return null;
+  }
 } 

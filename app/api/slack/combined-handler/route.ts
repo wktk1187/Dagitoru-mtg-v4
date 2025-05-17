@@ -148,11 +148,11 @@ export async function POST(req: NextRequest) {
     
     // Slackに最終結果を1回だけ通知
     try {
-      await sendSlackMessage(
-        event.channel,
+    await sendSlackMessage(
+      event.channel,
         statusMessage,
-        event.thread_ts || event.ts
-      );
+      event.thread_ts || event.ts
+    );
     } catch (error) {
       console.error('combined-handler: Failed to send Slack notification:', error);
     }
