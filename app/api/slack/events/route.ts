@@ -39,8 +39,8 @@ export async function POST(req: NextRequest) {
     }
     
     // PubSubクライアントの初期化
-    const gcpCredentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
-    if (!gcpCredentialsJson) {
+    const gcpCredentialsBase64 = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    if (!gcpCredentialsBase64) {
       console.error('GOOGLE_APPLICATION_CREDENTIALS_JSON is not set');
       // Vercel環境ではビルド時にエラーになるべきだが、ランタイムでもチェック
       return NextResponse.json({ error: 'Server configuration error: GCP credentials missing' }, { status: 500 });
@@ -48,14 +48,20 @@ export async function POST(req: NextRequest) {
 
     let credentials;
     try {
-      credentials = JSON.parse(gcpCredentialsJson);
+      const decodedJsonString = Buffer.from(gcpCredentialsBase64, 'base64').toString('utf-8');
+      credentials = JSON.parse(decodedJsonString);
     } catch (err) {
       console.error('Failed to parse GCP credentials JSON:', err);
       return NextResponse.json({ error: 'Server configuration error: GCP credentials invalid' }, { status: 500 });
     }
 
+    if (credentials && !credentials.project_id) {
+      console.warn('project_id not found in decoded credentials, attempting to use GCP_PROJECT_ID env var for PubSub');
+      credentials.project_id = process.env.GCP_PROJECT_ID || 'dagitoru-mtg';
+    }
+
     const pubsub = new PubSub({
-      projectId: 'dagitoru-mtg', // CONFIG.GCP_PROJECT_ID も利用可
+      projectId: credentials?.project_id || 'dagitoru-mtg',
       credentials,
     });
     
