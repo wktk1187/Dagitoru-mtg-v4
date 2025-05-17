@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { PubSub } from '@google-cloud/pubsub';
 import { CONFIG } from '@app/lib/config';
 import { SlackEventPayload, ProcessingJob } from '@app/lib/types';
-import { uploadFileToGCS, sendSlackMessage, startCloudRunJob, getFileType } from '@/app/lib/utils';
+import { uploadFileToGCS, sendSlackMessage, /* startCloudRunJob, */ getFileType } from '@/app/lib/utils';
 import { EventProcessor } from '@/app/lib/kv-store';
 
 // イベント処理インスタンスの作成
@@ -33,6 +34,27 @@ export async function POST(req: NextRequest) {
         headers: { 'Content-Type': 'application/json' }
       });
     }
+    
+    // PubSubクライアントの初期化
+    const gcpCredentialsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    if (!gcpCredentialsJson) {
+      console.error('GOOGLE_APPLICATION_CREDENTIALS_JSON is not set');
+      // Vercel環境ではビルド時にエラーになるべきだが、ランタイムでもチェック
+      return NextResponse.json({ error: 'Server configuration error: GCP credentials missing' }, { status: 500 });
+    }
+
+    let credentials;
+    try {
+      credentials = JSON.parse(gcpCredentialsJson);
+    } catch (err) {
+      console.error('Failed to parse GCP credentials JSON:', err);
+      return NextResponse.json({ error: 'Server configuration error: GCP credentials invalid' }, { status: 500 });
+    }
+
+    const pubsub = new PubSub({
+      projectId: 'dagitoru-mtg', // CONFIG.GCP_PROJECT_ID も利用可
+      credentials,
+    });
     
     // シグネチャ検証
     const timestamp = req.headers.get('x-slack-request-timestamp');
@@ -188,6 +210,35 @@ export async function POST(req: NextRequest) {
                 channel: job.channel,
                 timestamp: job.ts
               });
+
+              // Pub/Subへメッセージを発行
+              const topicName = 'dagitorutopic';
+              const messageData = {
+                jobId: jobId,
+                gcsPaths: successfulUploads.map(r => (r as { success: boolean; file: any; gcsPath: string }).gcsPath),
+                fileNames: successfulUploads.map(r => (r as { success: boolean; file: { name: string }; gcsPath: string }).file.name),
+                // 必要に応じて他の情報も追加
+                slackEvent: {
+                  text: event.text || '',
+                  channel: event.channel,
+                  ts: event.ts,
+                  thread_ts: event.thread_ts,
+                  user: event.user,
+                }
+              };
+
+              try {
+                const messageId = await pubsub.topic(topicName).publishMessage({
+                  data: Buffer.from(JSON.stringify(messageData)),
+                });
+                console.log(`[PUBSUB_PUBLISHED] messageId: ${messageId} for jobId: ${jobId}`);
+                // Slackへの通知はCloud Run側で行うか、ここで「処理を受け付けました」程度にするか検討
+              } catch (err) {
+                console.error(`[PUBSUB_ERROR] Failed to publish message for jobId: ${jobId}`, err);
+                // エラー時のフォールバック処理 (Slack通知、リトライキューなど)
+                // ここでエラーを返すとSlackにリトライされる可能性があるため注意
+                // return NextResponse.json({ error: 'Failed to publish to Pub/Sub' }, { status: 500 });
+              }
               
               // 完了メッセージの生成
               const successCount = successfulUploads.length;
@@ -220,13 +271,13 @@ export async function POST(req: NextRequest) {
                 console.error('Slack通知の送信に失敗:', e);
               }
               
-              // Cloud Runジョブの開始
-              try {
-                const jobStartResult = await startCloudRunJob(job);
-                console.log(`Cloud Runジョブを開始: ${jobId}, 結果:`, jobStartResult);
-              } catch (e) {
-                console.error('Cloud Runジョブの開始に失敗:', e);
-              }
+              // 処理を受け付けたことを示すレスポンス
+              return NextResponse.json({ 
+                ok: true, 
+                status: 'processing_job_created_and_published',
+                jobId: jobId,
+                pubSubMessageData: messageData // デバッグ用に含めることも可能だが、本番では削除検討
+              });
             } else {
               // すべてのファイルのアップロードが失敗した場合
               try {
