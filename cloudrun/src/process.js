@@ -8,7 +8,7 @@
 require('dotenv').config();
 const express = require('express');
 const { Storage } = require('@google-cloud/storage');
-const { PubSub } = require('@google-cloud/pubsub');
+// const { PubSub } = require('@google-cloud/pubsub'); // Pull型では不要になるためコメントアウト
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs').promises;
@@ -25,303 +25,98 @@ const port = process.env.PORT || 8080;
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
 const PROJECT_ID = process.env.GCP_PROJECT_ID;
 const CALLBACK_URL = process.env.CALLBACK_URL;
-const SUBSCRIPTION_NAME = process.env.PUBSUB_SUBSCRIPTION;
+// const SUBSCRIPTION_NAME = process.env.PUBSUB_SUBSCRIPTION; // Pull型では不要
 const TEMP_DIR = '/tmp';
 
 // クライアント初期化
 const storage = new Storage();
 const bucket = storage.bucket(BUCKET_NAME);
-const pubsub = new PubSub({
-  projectId: PROJECT_ID,
-});
+// const pubsub = new PubSub({ projectId: PROJECT_ID }); // Pull型では不要
 const speechClient = new speech.SpeechClient();
 
-// PubSubサブスクリプションの初期化
+/* // Pull型サブスクリプションの初期化とメッセージ処理 - Push型では不要なためコメントアウト
 let subscriptionName = SUBSCRIPTION_NAME;
 if (!subscriptionName.startsWith('projects/')) {
   subscriptionName = `projects/${PROJECT_ID}/subscriptions/${SUBSCRIPTION_NAME}`;
 }
 console.log(`[PUBSUB_INIT] Using subscription: ${subscriptionName}`);
-
 const subscription = pubsub.subscription(subscriptionName);
-
-// 明示的にメッセージを処理する関数
-async function processMessages() {
-  try {
-    console.log('[PUBSUB_EXPLICIT_PULL] Explicitly pulling messages...');
-    
-    // 明示的にメッセージを取得（タイムアウト設定を追加）
-    const options = {
-      maxMessages: 10,
-      timeout: 60 // タイムアウトを60秒に設定
-    };
-    
-    // タイムアウト処理を制御するPromiseラッパー
-    const pullWithTimeout = new Promise(async (resolve, reject) => {
-      try {
-        // タイムアウト用タイマー
-        const timer = setTimeout(() => {
-          reject(new Error('Pull operation timed out after 30 seconds'));
-        }, 30000); // 30秒のタイムアウト
-        
-        // pull操作を実行
-        const result = await subscription.pull(options);
-        
-        // タイマーをクリア
-        clearTimeout(timer);
-        
-        // 結果を返す
-        resolve(result);
-      } catch (error) {
-        reject(error);
-      }
-    });
-    
-    // タイムアウト制御付きでpull操作を実行
-    const [messages] = await pullWithTimeout;
-    
-    console.log(`[PUBSUB_EXPLICIT_PULL] Received ${messages ? messages.length : 0} messages`);
-    
-    // メッセージがあれば処理
-    if (messages && messages.length > 0) {
-      for (const message of messages) {
-        try {
-          console.log(`[PUBSUB_PROCESS] Processing message ID: ${message.id}`);
-          
-          // メッセージからジョブデータを抽出
-          const job = parseMessage(message);
-          
-          if (!job) {
-            console.error('[PUBSUB_ERROR] Invalid job data, acknowledging message');
-            await message.ack();
-            continue;
-          }
-          
-          console.log(`[PUBSUB_PROCESS] Processing job: ${job.id}`, {
-            fileCount: job.fileIds.length,
-            timestamp: new Date().toISOString()
-          });
-          
-          // ジョブを処理
-          const result = await processJob(job);
-          
-          // 処理が完了したらメッセージを確認応答
-          await message.ack();
-          
-          console.log(`[PUBSUB_PROCESS] Job completed: ${job.id}`, {
-            result: result ? 'success' : 'error'
-          });
-        } catch (error) {
-          console.error(`[PUBSUB_PROCESS_ERROR] Error processing message: ${error.message}`, error);
-          // エラーの場合でもメッセージを確認応答（再処理を防ぐため）
-          try {
-            await message.ack();
-          } catch (ackError) {
-            console.error(`[PUBSUB_ACK_ERROR] Failed to acknowledge message: ${ackError.message}`);
-          }
-        }
-      }
-    } else {
-      console.log('[PUBSUB_EXPLICIT_PULL] No messages to process');
-    }
-  } catch (error) {
-    console.error(`[PUBSUB_EXPLICIT_PULL_ERROR] Error pulling messages: ${error.message}`, error);
-    console.error('[PUBSUB_ERROR_DETAILS]', {
-      name: error.name,
-      message: error.message,
-      code: error.code,
-      time: new Date().toISOString()
-    });
-  }
-}
-
-// メッセージリスナーを設定
-const setupMessageListener = () => {
-  console.log('[PUBSUB_SETUP] Setting up message listener...');
-  
-  // リスナー関数を定義
-  const messageHandler = async (message) => {
-    console.log(`[PUBSUB_MESSAGE] Received message ${message.id}`, {
-      publishTime: message.publishTime,
-      received: new Date().toISOString()
-    });
-    
-    try {
-      // メッセージからジョブデータを抽出
-      const job = parseMessage(message);
-      
-      if (!job) {
-        console.error('[PUBSUB_ERROR] Invalid job data, acknowledging message');
-        message.ack();
-        return;
-      }
-      
-      console.log(`[PUBSUB_PROCESS] Processing job: ${job.id}`, {
-        fileCount: job.fileIds.length,
-        timestamp: new Date().toISOString()
-      });
-      
-      // ジョブを処理
-      const result = await processJob(job);
-      
-      // 処理が完了したらメッセージを確認応答
-      message.ack();
-      
-      console.log(`[PUBSUB_PROCESS] Job completed: ${job.id}`, {
-        result: result ? 'success' : 'error'
-      });
-    } catch (error) {
-      console.error(`[PUBSUB_ERROR] Error processing message: ${error.message}`, error);
-      // エラーの場合でもメッセージを確認応答（再処理を防ぐため）
-      try {
-        message.ack();
-      } catch (ackError) {
-        console.error(`[PUBSUB_ACK_ERROR] Failed to acknowledge message: ${ackError.message}`);
-      }
-    }
-  };
-  
-  // イベントリスナーによるメッセージ受信
-  subscription.on('message', messageHandler);
-  
-  console.log('[PUBSUB_SETUP] Message listener attached. Waiting for messages...');
-  
-  // 定期的に明示的にメッセージを取得・処理（バックアップメカニズム）
-  // 30秒ごとに実行
-  setInterval(processMessages, 30000);
-  
-  // 起動直後にも一度明示的に実行
-  processMessages();
-};
-
-// 起動時に処理を開始
+async function processMessages() { ... }
+const setupMessageListener = () => { ... };
 setupMessageListener();
+*/
 
-// ミドルウェア設定
-app.use(express.json());
+// ミドルウェア設定 (既に存在することを確認)
+app.use(express.json()); // bodyParser.json() の代わりに express.json() を使用
 
 // ルート設定 - ヘルスチェック用
 app.get('/', (req, res) => {
   res.status(200).send('Dagitoru Processor is running');
 });
 
-// 処理開始エンドポイント
-app.post('/process', async (req, res) => {
-  console.log('Processing request received:', req.body);
-  
+// 新しい /pubsub エンドポイント (Push型サブスクリプション用)
+app.post('/pubsub', async (req, res) => {
   try {
-    // リクエストを検証
-    if (!req.body || !req.body.jobId || !req.body.fileIds) {
-      return res.status(400).send('Invalid request. Required: jobId, fileIds');
+    console.log('[PUBSUB_PUSH_RECEIVED] Received Pub/Sub message via Push');
+    if (!req.body || !req.body.message || !req.body.message.data) {
+      console.error('[PUBSUB_PUSH_ERROR] Invalid Pub/Sub message format');
+      return res.status(400).send('Bad Request: Invalid Pub/Sub message format');
     }
+
+    const messageData = Buffer.from(req.body.message.data, 'base64').toString('utf8');
+    console.log(`[PUBSUB_PUSH_DATA] Decoded message data: ${messageData.substring(0, 500)}`);
     
-    // 非同期で処理を実行（レスポンスはすぐに返す）
-    const job = {
-      id: req.body.jobId,
-      fileIds: req.body.fileIds,
-      metadata: req.body.metadata || {},
-      channel: req.body.channel,
-      ts: req.body.ts,
-      thread_ts: req.body.thread_ts
-    };
+    const job = JSON.parse(messageData); // parseMessage関数は使わず直接パース
     
-    // 処理を非同期で開始
+    if (!job || !job.id || !job.fileIds) {
+      console.error('[PUBSUB_PUSH_ERROR] Invalid job data after parsing', job);
+      return res.status(400).send('Bad Request: Invalid job data after parsing');
+    }
+
+    console.log(`[PUBSUB_PUSH_JOB] Processing job ID: ${job.id}`);
+
+    // ジョブ処理を非同期で実行
     processJob(job)
       .then(result => {
-        sendCallback({
-          jobId: job.id,
-          status: 'success',
-          transcriptUrl: result.transcriptUrl
-        }).catch(err => console.error('Callback error:', err));
+        console.log(`[PUBSUB_PUSH_JOB_SUCCESS] Job ${job.id} processed successfully.`);
+        // sendCallback は processJob 内で呼び出されるためここでは不要
       })
       .catch(error => {
-        console.error(`Error processing job ${job.id}:`, error);
-        sendCallback({
-          jobId: job.id,
-          status: 'failure',
-          error: error.message
-        }).catch(err => console.error('Callback error:', err));
+        console.error(`[PUBSUB_PUSH_JOB_ERROR] Error processing job ${job.id}: ${error.message}`, error);
+        // エラー時のコールバックも processJob 内で処理される想定
       });
-    
-    // 即時にレスポンスを返す
-    res.status(202).json({ 
-      message: 'Processing started',
-      jobId: job.id
-    });
-  } catch (error) {
-    console.error('Error handling request:', error);
-    res.status(500).send('Internal server error');
+
+    res.status(200).send('OK'); // Pub/Sub にはすぐにACKを返す
+  } catch (err) {
+    console.error('[PUBSUB_PUSH_FATAL_ERROR] Error handling Pub/Sub push message:', err);
+    res.status(500).send('Internal Server Error');
   }
 });
+
+// 以前の /process エンドポイントはPub/Sub Push型では通常不要になるためコメントアウト
+/*
+app.post('/process', async (req, res) => {
+  console.log('Processing request received:', req.body);
+  // ... (以前のコード)
+});
+*/
 
 // サーバー起動
 app.listen(port, () => {
   console.log(`Dagitoru Processor listening on port ${port}`);
 });
 
-/** * Pub/Subメッセージからジョブデータを抽出する関数 */
-
-/**
- * Pub/Subメッセージからジョブデータを抽出する関数
- */
+// parseMessage関数は /pubsub エンドポイント内で直接処理するため、ここでは不要になる可能性があります。
+// ただし、processJob関数がまだ依存している場合は残します。
+// 今回は直接JSON.parseするため、parseMessageはコメントアウトまたは削除の対象です。
+/*
 function parseMessage(message) {
-  try {
-    console.log(`[PARSE_MESSAGE] Parsing message ID: ${message.id}`);
-    
-    let decodedData;
-    
-    // メッセージが存在するかチェック
-    if (!message || !message.data) {
-      console.error('[PARSE_MESSAGE_ERROR] No message data found');
-      return null;
-    }
-    
-    // データの形式によって変換方法を変える
-    if (Buffer.isBuffer(message.data)) {
-      // Bufferの場合、UTF-8に変換
-      decodedData = message.data.toString('utf8');
-    } else if (typeof message.data === 'string') {
-      // Base64エンコードされた文字列の場合、デコード
-      decodedData = Buffer.from(message.data, 'base64').toString('utf8');
-    } else if (typeof message.data === 'object') {
-      // すでにオブジェクトの場合はそのまま使用
-      decodedData = JSON.stringify(message.data);
-    } else {
-      // その他の場合は文字列に変換
-      decodedData = String(message.data);
-    }
-    
-    console.log(`[PARSE_MESSAGE] Decoded data: ${decodedData.substring(0, 200)}${decodedData.length > 200 ? '...' : ''}`);
-    
-    // JSONパース
-    let jobData;
-    try {
-      jobData = JSON.parse(decodedData);
-    } catch (parseError) {
-      console.error(`[PARSE_MESSAGE_ERROR] Failed to parse JSON: ${parseError.message}`);
-      return null;
-    }
-    
-    // ジョブデータの検証
-    if (!jobData.id || !jobData.fileIds || !Array.isArray(jobData.fileIds)) {
-      console.error('[PARSE_MESSAGE_ERROR] Invalid job data structure:', {
-        hasId: !!jobData.id,
-        hasFileIds: !!jobData.fileIds,
-        fileIdsIsArray: Array.isArray(jobData.fileIds)
-      });
-      return null;
-    }
-    
-    console.log(`[PARSE_MESSAGE] Successfully parsed job ID: ${jobData.id}`);
-    return jobData;
-  } catch (error) {
-    console.error(`[PARSE_MESSAGE_ERROR] Error parsing message: ${error.message}`, error);
-    return null;
-  }
+  // ... (以前のコード)
 }
+*/
 
 /**
- * ジョブを処理する関数
+ * ジョブを処理する関数 (内容は変更なし、呼び出し元が変わるだけ)
  */
 async function processJob(job) {
   console.log(`[PROCESS_JOB] Processing job: ${job.id}`);
@@ -487,8 +282,9 @@ async function extractAudio(videoPath, audioPath) {
 /**
  * 音声ファイルを文字起こしする関数
  */
-async function transcribeSpeech(audioPath) {
+async function transcribeSpeech(audioPath, textContext) {
   console.log(`Starting speech recognition for ${audioPath}`);
+  console.log(`With text context (first 100 chars): ${textContext ? textContext.substring(0,100) : 'N/A'}`);
   
   // ファイルを読み込み
   const audioBytes = await fs.readFile(audioPath);
@@ -510,7 +306,11 @@ async function transcribeSpeech(audioPath) {
       industryNaicsCodeOfAudio: 541990, // Professional Services
       microphoneDistance: 'NEARFIELD',
       originalMediaType: 'AUDIO'
-    }
+    },
+    speechContexts: textContext ? [{
+      phrases: textContext.split('\\n').map(line => line.trim()).filter(line => line.length > 0),
+      boost: 15
+    }] : [],
   };
   
   const request = {
